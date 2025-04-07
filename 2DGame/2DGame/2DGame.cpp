@@ -1,7 +1,11 @@
 ﻿#include "framework.h"
+
+std::random_device rd;
+std::mt19937 gen(rd());
+std::uniform_real_distribution<float> g_randomMonsterPosX(10.f, 1190.f);
+std::uniform_real_distribution<float> g_randomMonsterPosY(10.f, 690.f);
 // =========================================
 // 구조체
-
 struct Texture
 {
     HDC hDC;
@@ -11,10 +15,25 @@ struct Texture
     wstring strName;
     wstring strPath;
 };
+
+struct Player
+{
+    vPoint pos;
+    vPoint scale;
+    DIR_TYPE dir;
+    float speed;
+};
+
+struct Monster
+{
+    vPoint pos;
+    vPoint scale;
+    DIR_TYPE dir;
+};
 // =========================================
 
 
-// =========================================
+// ==========================================================
 // 전역 변수
 static HINSTANCE hInst{};
 static WCHAR szTitle[MAX_LOADSTRING]{};
@@ -25,7 +44,12 @@ static HDC g_hDC{};
 static HDC g_memDC{};
 
 static unordered_map<wstring, Texture*> g_mapTexture{};
-// =========================================
+
+static Player g_player{};
+static Monster* g_pMonster = nullptr;
+
+static vector<KeyInfo> g_vecKeyInfo{};
+// ==========================================================
 
 
 // ===============================================================
@@ -35,7 +59,6 @@ static INT_PTR CALLBACK About(HWND, UINT, WPARAM, LPARAM);
 
 static Texture* LoadTexture(const wstring& name, const wstring& path);
 static Texture* FindTexture(const wstring& name);
-
 // ===============================================================
 
 
@@ -74,7 +97,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
             .hInstance = hInstance,
             .hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_MY2DGAME)),
             .hCursor = LoadCursor(nullptr, IDC_ARROW),
-            .hbrBackground = (HBRUSH)(COLOR_WINDOW + 2),    // TODO: 배경색 변경 (누끼 확인하려고 바꿈)
+            .hbrBackground = (HBRUSH)(COLOR_WINDOW + 2),
             .lpszMenuName = NULL,
             .lpszClassName = szWindowClass,
             .hIconSm = LoadIcon(wcex.hInstance, MAKEINTRESOURCE(IDI_SMALL))
@@ -116,16 +139,36 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     // 더블 버퍼링 생성
     g_hDC = GetDC(g_hWnd);
-
-    HBITMAP hBitmap = CreateCompatibleBitmap(g_memDC, g_iViewsizeX, g_iViewsizeY);
     g_memDC = CreateCompatibleDC(g_hDC);
 
+    HBITMAP hBitmap = CreateCompatibleBitmap(g_hDC, g_iViewsizeX, g_iViewsizeY);
     HBITMAP hOldBit = (HBITMAP)SelectObject(g_memDC, hBitmap);
     //DeleteObject(hOldBit);
 
     {   // 게임의 기본 정보를 초기화
         LoadTexture(L"Player", L"Resource\\ex.bmp");
-        LoadTexture(L"Monster", L"Resource\\ex.bmp");
+        LoadTexture(L"Monster", L"Resource\\arrow.bmp");
+
+        // 키 입력 초기화
+        for (int i = 0; i < (int)KEY::END; ++i)
+        {
+            g_vecKeyInfo.emplace_back(KeyInfo{ KEY_STATE::NONE, false });
+        }
+
+        // 플레이어 초기화
+        g_player.pos = { 100.f, 100.f };
+        g_player.scale = { 1.5f, 1.5f };
+        g_player.dir = { DIR_TYPE::RIGHT };
+        g_player.speed = 3.f;
+
+        // 몬스터 초기화
+        g_pMonster = new Monster[g_iMonsterCnt]{};
+
+        for (int i = 0; i < g_iMonsterCnt; ++i)
+        {
+            g_pMonster[i].pos = { 80.f * i, 200.f };
+            g_pMonster[i].scale = { 1.5f, 1.5f };
+        }
     }
 
     // 메시지 문
@@ -145,46 +188,85 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                 DispatchMessage(&msg);
             }
         }
-        else
-        {
-            // 업데이트
-            {
 
+        {
+            {   // 업데이트
+
+                // 키 입력
+                for (int i = 0; i < (int)KEY::END; ++i)
+                {
+                    if (GetAsyncKeyState(KeyMap[i]) & 0x8000)  // 눌림
+                    {
+                        if (g_vecKeyInfo[i].bPrevPush)
+                        {
+                            g_vecKeyInfo[i].eState = KEY_STATE::HOLD;
+                        }
+                        else
+                        {
+                            g_vecKeyInfo[i].eState = KEY_STATE::TAP;
+                        }
+
+                        g_vecKeyInfo[i].bPrevPush = true;
+                    }
+                    else
+                    {
+                        if (g_vecKeyInfo[i].bPrevPush)
+                        {
+                            g_vecKeyInfo[i].eState = KEY_STATE::AWAY;
+                        }
+                        else
+                        {
+                            g_vecKeyInfo[i].eState = KEY_STATE::NONE;
+                        }
+
+                        g_vecKeyInfo[i].bPrevPush = false;
+                    }
+                }
             }
 
-            // 화면을 지움
+            // 배경
+            HBRUSH hBrush = CreateSolidBrush(RGB(30, 30, 30));
+            HBRUSH hOldBrush = (HBRUSH)SelectObject(g_memDC, hBrush);
+
             Rectangle(g_memDC, -1, -1, g_iViewsizeX + 1, g_iViewsizeY + 1);
+
+            SelectObject(g_memDC, hOldBrush);
+            DeleteObject(hBrush);
 
             {   // 바닥 그리기
 
             }
 
             {   // 플레이어 그리기
-                vPoint vPos{ 100.f, 100.f };
-                vPoint vScale{ 1.5f, 1.5f };
-                DIR_TYPE dDir{ DIR_TYPE::RIGHT };
-                
+                if (g_vecKeyInfo[(int)KEY::A].eState == KEY_STATE::HOLD)
+                {
+                    g_player.pos.x -= g_player.speed;
+                }
+                if (g_vecKeyInfo[(int)KEY::D].eState == KEY_STATE::HOLD)
+                {
+                    g_player.pos.x += g_player.speed;
+                }
+
                 Texture* pTexture = nullptr;
                 pTexture = FindTexture(L"Player");
                 assert(pTexture && "Player.bmp 못 찾음");
-                
-                TransparentBlt(g_hDC, (int)vPos.x, (int)vPos.y,
-                    (int)(pTexture->bitInfo.bmWidth * vScale.x), (int)(pTexture->bitInfo.bmHeight * vScale.y),
+
+                TransparentBlt(g_memDC, (int)g_player.pos.x, (int)g_player.pos.y,
+                    (int)(pTexture->bitInfo.bmWidth * g_player.scale.x), (int)(pTexture->bitInfo.bmHeight * g_player.scale.y),
                     pTexture->hDC, 0, 0, (int)pTexture->bitInfo.bmWidth, (int)pTexture->bitInfo.bmHeight, RGB(255, 255, 255));
             }
 
             {   // 몬스터 그리기
-                vPoint vPos{ 300.f, 300.f };
-                vPoint vScale{ 1.f, 1.f };
-                DIR_TYPE dDir{ DIR_TYPE::RIGHT };
-                
                 Texture* pTexture = nullptr;
                 pTexture = FindTexture(L"Monster");
                 assert(pTexture && "Monster.bmp 못 찾음");
-                
-                TransparentBlt(g_hDC, (int)vPos.x, (int)vPos.y,
-                    (int)(pTexture->bitInfo.bmWidth * vScale.x), (int)(pTexture->bitInfo.bmHeight * vScale.y),
-                    pTexture->hDC, 0, 0, (int)pTexture->bitInfo.bmWidth, (int)pTexture->bitInfo.bmHeight, RGB(255, 255, 255));
+
+                for (int i = 0; i < g_iMonsterCnt; ++i)
+                {
+                    TransparentBlt(g_memDC, (int)g_pMonster[i].pos.x, (int)g_pMonster[i].pos.y,
+                        (int)(pTexture->bitInfo.bmWidth * g_pMonster->scale.x), (int)(pTexture->bitInfo.bmHeight * g_pMonster->scale.y),
+                        pTexture->hDC, 0, 0, (int)pTexture->bitInfo.bmWidth, (int)pTexture->bitInfo.bmHeight, RGB(255, 255, 255));
+                }
             }
 
             // 픽셀을 윈도우로 옮김
@@ -227,6 +309,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     {
         delete iterTexture->second;
     }
+
+    delete[] g_pMonster;
 
 
     return (int) msg.wParam;
@@ -309,7 +393,6 @@ Texture* LoadTexture(const wstring& name, const wstring& path)
         pTexture->strPath = totalPath;
 
         pTexture->hBit = (HBITMAP)LoadImage(nullptr, pTexture->strPath.c_str(), IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION | LR_LOADFROMFILE);
-
         assert(pTexture->hBit);
 
         // 비트맵과 연결할 DC
@@ -321,7 +404,6 @@ Texture* LoadTexture(const wstring& name, const wstring& path)
 
         // 비트맵 정보
         GetObject(pTexture->hBit, sizeof(BITMAP), &pTexture->bitInfo);
-
         assert(pTexture->hBit);
 
         g_mapTexture.insert(make_pair(pTexture->strName, pTexture));
