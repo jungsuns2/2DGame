@@ -91,6 +91,15 @@ struct KeyInfo
     bool bPrevPush;
 };
 
+struct Animation
+{
+    std::vector<Texture*> texture;
+    int32_t currentFrame;
+    int32_t maxFrame;
+    float time;
+    float accTime;
+};
+
 // ===============================================================
 // 함수
 static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -98,6 +107,10 @@ static INT_PTR CALLBACK About(HWND, UINT, WPARAM, LPARAM);
 
 static Texture* LoadTexture(const std::string& name);
 static void DrawTexture(const Texture& texture, const vPoint pos, const vPoint scale);
+
+static void LoadAnimation(Animation& animation, const std::string& name, int32_t maxFrame, float time);
+static void DrawAnimation(const Animation& animation, const vPoint pos, const vPoint scale);
+static void UpdateAnimation(Animation& animation, float deltaTime);
 
 // ==========================================================
 // 전역 변수
@@ -118,7 +131,6 @@ static HDC gMemDC;
 static std::unordered_map<std::string, Texture*> gMapTexture;
 
 static Player gPlayer;
-static Texture* gPlayerTexture;
 static std::array<Monster, MONSTER_COUNT>gArrayMonster;
 static Texture* gMonsterTexture;
 
@@ -156,6 +168,8 @@ constexpr int32_t KeyMap[(int32_t)KEY::END]
 };
 
 static float gDeltaTime;
+
+Animation* gPlayerIdle;
 // ==========================================================
 
 
@@ -237,11 +251,10 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
     HBITMAP hOldBit = (HBITMAP)SelectObject(gMemDC, hBitmap);
 
     {   // 게임의 기본 정보를 초기화
-        gPlayerTexture = LoadTexture("ex.bmp");
-        assert(gPlayerTexture and "Player.bmp 못 찾음");
+        gPlayerIdle = new Animation;
+        LoadAnimation(*gPlayerIdle, "frame_", 6, 0.3f);
 
-        gMonsterTexture = LoadTexture("arrow.bmp");
-        assert(gMonsterTexture and "Monster.bmp 못 찾음");
+        gMonsterTexture = LoadTexture("ex0.bmp");
 
         // 키 입력 초기화
         for (int32_t i = 0; i < (int32_t)KEY::END; ++i)
@@ -253,7 +266,7 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
         gPlayer = 
         {
             .pos = {.x = float(VIEWSIZE_X / 2.0f - 20.0f), .y = float(VIEWSIZE_Y / 2.0f)},
-            .scale = { .x = 1.5f, .y = 1.5f },
+            .scale = { .x = 2.5f, .y = 2.5f },
             .dir = DIR_TYPE::RIGHT,
             .speed = 100.0f
         };
@@ -338,6 +351,9 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             {
                 gPlayer.pos.x += gPlayer.speed * gDeltaTime;
             }
+
+            // 애니메이션 업데이트
+            UpdateAnimation(*gPlayerIdle, gDeltaTime);
         }
 
         {   // 그리기
@@ -350,9 +366,8 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             SelectObject(gMemDC, hOldBrush);
             DeleteObject(hBrush);
 
-
             // 플레이어 그리기
-            DrawTexture(*gPlayerTexture, gPlayer.pos, gPlayer.scale);
+            DrawAnimation(*gPlayerIdle, gPlayer.pos, gPlayer.scale);
 
             // 몬스터 그리기
             for (Monster& monster : gArrayMonster)
@@ -411,15 +426,12 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
 
         DeleteDC(texture->hDC);
         DeleteObject(texture->hBit);
+
+        // bmp 삭제
+        delete iter.second;
     }
 
-    // bmp 삭제
-    std::unordered_map<std::string, Texture*> ::iterator iterTexture = gMapTexture.begin();
-
-    for (; iterTexture != gMapTexture.end(); ++iterTexture)
-    {
-        delete iterTexture->second;
-    }
+    delete gPlayerIdle;
 
     return (int) msg.wParam;
 }
@@ -511,5 +523,46 @@ void DrawTexture(const Texture& texture, const vPoint pos, const vPoint scale)
 {
     TransparentBlt(gMemDC, (int)pos.x, (int)pos.y,
         (int)(texture.bitInfo.bmWidth * scale.x), (int)(texture.bitInfo.bmHeight * scale.y),
-        texture.hDC, 0, 0, (int)texture.bitInfo.bmWidth, (int)texture.bitInfo.bmHeight, RGB(255, 255, 255));
+        texture.hDC, 0, 0, (int)texture.bitInfo.bmWidth, (int)texture.bitInfo.bmHeight, RGB(0, 0, 0));
+}
+
+void LoadAnimation(Animation& animation, const std::string& name, int32_t maxFrame, float time)
+{
+    animation =
+    {
+        .currentFrame = 0,
+        .maxFrame = maxFrame,
+        .time = time
+    };
+
+    for (int32_t i = 0; i < maxFrame; ++i)
+    {
+        std::string fileName = name + std::to_string(i) + ".bmp";
+        Texture* texture = LoadTexture(fileName);
+        assert(texture and "애니메이션 오류");
+
+        animation.texture.push_back(texture);
+    }
+}
+
+void DrawAnimation(const Animation& animation, const vPoint pos, const vPoint scale)
+{
+    if (animation.texture.empty())
+    {
+        return;
+    }
+
+    Texture* current = animation.texture[animation.currentFrame];
+    DrawTexture(*current, pos, scale);
+}
+
+void UpdateAnimation(Animation& animation, float deltaTime)
+{
+    animation.accTime += deltaTime;
+
+    if (animation.accTime >= animation.time)
+    {
+        animation.accTime = 0.0f;
+        animation.currentFrame = (animation.currentFrame + 1) % animation.maxFrame;
+    }
 }
