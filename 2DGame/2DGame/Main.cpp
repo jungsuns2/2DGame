@@ -267,15 +267,24 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
     HBITMAP hOldBit = (HBITMAP)SelectObject(gMemDC, hBitmap);
 
     {   // 게임의 기본 정보를 초기화
+        // 플레이어
         LoadAnimation(gPlayer_Animation[(int32_t)OBJECT_STATE::IDLE][(int32_t)DIR_TYPE::LEFT], "Player\\Left\\idle", 6, 0.3f);
         LoadAnimation(gPlayer_Animation[(int32_t)OBJECT_STATE::WALK][(int32_t)DIR_TYPE::LEFT], "Player\\Left\\walk", 8, 0.3f);
+        LoadAnimation(gPlayer_Animation[(int32_t)OBJECT_STATE::ATTACK][(int32_t)DIR_TYPE::LEFT], "Player\\LEFT\\attack_base", 6, 0.3f);
+
         LoadAnimation(gPlayer_Animation[(int32_t)OBJECT_STATE::IDLE][(int32_t)DIR_TYPE::RIGHT], "Player\\Right\\idle", 6, 0.3f);
         LoadAnimation(gPlayer_Animation[(int32_t)OBJECT_STATE::WALK][(int32_t)DIR_TYPE::RIGHT], "Player\\Right\\walk", 7, 0.3f);
+        LoadAnimation(gPlayer_Animation[(int32_t)OBJECT_STATE::ATTACK][(int32_t)DIR_TYPE::RIGHT], "Player\\Right\\attack_base", 6, 0.3f);
 
-        LoadAnimation(gMonster_Animation[(int32_t)OBJECT_STATE::IDLE][(int32_t)DIR_TYPE::LEFT], "Monster\\Right\\idle", 6, 0.3f);
-        LoadAnimation(gMonster_Animation[(int32_t)OBJECT_STATE::WALK][(int32_t)DIR_TYPE::LEFT], "Monster\\Right\\idle", 6, 0.3f);
+        // 몬스터
+        LoadAnimation(gMonster_Animation[(int32_t)OBJECT_STATE::IDLE][(int32_t)DIR_TYPE::LEFT], "Monster\\Left\\idle", 6, 0.3f);
+        LoadAnimation(gMonster_Animation[(int32_t)OBJECT_STATE::WALK][(int32_t)DIR_TYPE::LEFT], "Monster\\Left\\walk", 6, 0.3f);
+        LoadAnimation(gMonster_Animation[(int32_t)OBJECT_STATE::ATTACK][(int32_t)DIR_TYPE::LEFT], "Monster\\Left\\attack_base", 6, 0.3f);
+
         LoadAnimation(gMonster_Animation[(int32_t)OBJECT_STATE::IDLE][(int32_t)DIR_TYPE::RIGHT], "Monster\\Right\\idle", 6, 0.3f);
         LoadAnimation(gMonster_Animation[(int32_t)OBJECT_STATE::WALK][(int32_t)DIR_TYPE::RIGHT], "Monster\\Right\\walk", 8, 0.3f);
+        LoadAnimation(gMonster_Animation[(int32_t)OBJECT_STATE::ATTACK][(int32_t)DIR_TYPE::RIGHT], "Monster\\Right\\attack_base", 6, 0.1f);
+
 
         // 키 입력 초기화
         for (int32_t i = 0; i < (int32_t)KEY::END; ++i)
@@ -299,7 +308,7 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             gArrayMonster[i] =
             {
                 .pos = {.x = 80.0f * i, .y = 200.0f},
-                .scale = { .x = 1.5f, .y = 1.5f },
+                .scale = { .x = 2.5f, .y = 2.5f },
                 .speed = 70.0f,
                 .currDir = DIR_TYPE::RIGHT,
                 .currState = OBJECT_STATE::IDLE
@@ -386,8 +395,14 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
                 gPlayer.currState = OBJECT_STATE::WALK;
             }
 
+            if (gVecKeyInfo[(int32_t)KEY::LBUTTON].eState == KEY_STATE::TAP)
+            {
+                gPlayer.currState = OBJECT_STATE::ATTACK;
+            }
+
             if (gVecKeyInfo[(int32_t)KEY::W].eState == KEY_STATE::NONE && gVecKeyInfo[(int32_t)KEY::S].eState == KEY_STATE::NONE &&
-                gVecKeyInfo[(int32_t)KEY::A].eState == KEY_STATE::NONE && gVecKeyInfo[(int32_t)KEY::D].eState == KEY_STATE::NONE)
+                gVecKeyInfo[(int32_t)KEY::A].eState == KEY_STATE::NONE && gVecKeyInfo[(int32_t)KEY::D].eState == KEY_STATE::NONE &&
+                gVecKeyInfo[(int32_t)KEY::LBUTTON].eState == KEY_STATE::NONE)
             {
                 gPlayer.currState = OBJECT_STATE::IDLE;
             }
@@ -399,7 +414,7 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             }
 
             // 애니메이션 업데이트
-            for (int32_t i = 0; i < (int32_t)OBJECT_STATE::ATTACK; ++i)
+            for (int32_t i = 0; i < (int32_t)OBJECT_STATE::DAMAGE; ++i)
             {
                 for (int32_t j = 0; j < (int32_t)DIR_TYPE::END; ++j)
                 {
