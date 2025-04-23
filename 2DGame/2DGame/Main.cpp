@@ -58,6 +58,7 @@ enum class OBJECT_STATE
     IDLE,
     WALK,
     ATTACK,
+    ESKILL,
     DAMAGE,
     DEAD,
     END
@@ -89,6 +90,8 @@ struct Player
 
     OBJECT_STATE prevState;
     OBJECT_STATE currState;
+
+    bool dead;
 };
 
 struct Monster
@@ -102,6 +105,22 @@ struct Monster
 
     OBJECT_STATE prevState;
     OBJECT_STATE currState;
+
+    bool dead;
+};
+
+struct Arrow
+{
+    vPoint pos;
+    vPoint scale;
+    float speed;
+
+    vPoint dirPos;
+    DIR_TYPE curDir;
+
+    float elapsedTime;
+
+    bool draw;
 };
 
 struct KeyInfo
@@ -114,9 +133,11 @@ struct Animation
 {
     std::vector<Texture*> texture;
     int32_t currentFrame;
-    int32_t maxFrame;
-    float time;
-    float accTime;
+    int32_t frameCount;
+    float frameIntervalTime;
+    float elapsedTime;
+    bool loop;
+    bool dead;
 };
 
 // ===============================================================
@@ -125,10 +146,12 @@ static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 static INT_PTR CALLBACK About(HWND, UINT, WPARAM, LPARAM);
 
 static Texture* LoadTexture(const std::string& name);
-static void DrawTexture(const Texture& texture, const vPoint pos, const vPoint scale);
+static void DrawTexture(Texture* texture, const vPoint pos, const vPoint scale);
 
-static void LoadAnimation(Animation& animation, const std::string& name, int32_t maxFrame, float time);
+static void LoadAnimation(Animation* animation, const std::string& name, int32_t maxFrame, float time, bool bLoop);
 static void DrawAnimation(const Animation& animation, const vPoint pos, const vPoint scale);
+
+static void AnimationUpdate(Animation* animation);
 
 
 // ==========================================================
@@ -152,8 +175,14 @@ static std::unordered_map<std::string, Texture*> gMapTexture;
 static Player gPlayer;
 static Animation gPlayer_Animation[(int32_t)OBJECT_STATE::END][(int32_t)DIR_TYPE::END];
 
+static std::vector<Arrow> gArrow;
+static Texture* gArrowTexture[(int32_t)DIR_TYPE::END];
+
 static std::array<Monster, MONSTER_COUNT>gArrayMonster;
 static Animation gMonster_Animation[(int32_t)OBJECT_STATE::END][(int32_t)DIR_TYPE::END];
+static bool isArrowUpdate;
+
+static void AnimationInit(Animation* animation, bool dead);
 
 static std::vector<KeyInfo> gVecKeyInfo;
 
@@ -201,7 +230,7 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
 
     LoadStringW(hInstance, IDS_APP_TITLE, gSzTitle, MAX_LOADSTRING);
     LoadStringW(hInstance, IDC_MY2DGAME, gSzWindowClass, MAX_LOADSTRING);
-   
+
     {   // 콘솔창 생성
         AllocConsole();
 
@@ -231,7 +260,7 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
     };
 
     RegisterClassExW(&wcex);
-    
+
 
     // 화면이 가운데에 생성되도록 조정
     RECT rSize =
@@ -258,7 +287,7 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
 
     ShowWindow(gHWnd, nCmdShow);
     UpdateWindow(gHWnd);
-    
+
     // 더블 버퍼링 생성
     gHDC = GetDC(gHWnd);
     gMemDC = CreateCompatibleDC(gHDC);
@@ -267,23 +296,33 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
     HBITMAP hOldBit = (HBITMAP)SelectObject(gMemDC, hBitmap);
 
     {   // 게임의 기본 정보를 초기화
-        // 플레이어
-        LoadAnimation(gPlayer_Animation[(int32_t)OBJECT_STATE::IDLE][(int32_t)DIR_TYPE::LEFT], "Player\\Left\\idle", 6, 0.3f);
-        LoadAnimation(gPlayer_Animation[(int32_t)OBJECT_STATE::WALK][(int32_t)DIR_TYPE::LEFT], "Player\\Left\\walk", 8, 0.3f);
-        LoadAnimation(gPlayer_Animation[(int32_t)OBJECT_STATE::ATTACK][(int32_t)DIR_TYPE::LEFT], "Player\\LEFT\\attack_base", 6, 0.3f);
+        {   // 이미지
+            constexpr int MAX_DIR_NUM = int(DIR_TYPE::END);
+            const std::string dirName[MAX_DIR_NUM] = { "Left", "Right" };
 
-        LoadAnimation(gPlayer_Animation[(int32_t)OBJECT_STATE::IDLE][(int32_t)DIR_TYPE::RIGHT], "Player\\Right\\idle", 6, 0.3f);
-        LoadAnimation(gPlayer_Animation[(int32_t)OBJECT_STATE::WALK][(int32_t)DIR_TYPE::RIGHT], "Player\\Right\\walk", 7, 0.3f);
-        LoadAnimation(gPlayer_Animation[(int32_t)OBJECT_STATE::ATTACK][(int32_t)DIR_TYPE::RIGHT], "Player\\Right\\attack_base", 6, 0.3f);
+            for (int dir = 0; dir < MAX_DIR_NUM; ++dir)
+            {
+                std::string playerFolderName = "Player\\" + dirName[dir] + "\\";
+                std::string monsterFolderName = "Monster\\" + dirName[dir] + "\\";
 
-        // 몬스터
-        LoadAnimation(gMonster_Animation[(int32_t)OBJECT_STATE::IDLE][(int32_t)DIR_TYPE::LEFT], "Monster\\Left\\idle", 6, 0.3f);
-        LoadAnimation(gMonster_Animation[(int32_t)OBJECT_STATE::WALK][(int32_t)DIR_TYPE::LEFT], "Monster\\Left\\walk", 6, 0.3f);
-        LoadAnimation(gMonster_Animation[(int32_t)OBJECT_STATE::ATTACK][(int32_t)DIR_TYPE::LEFT], "Monster\\Left\\attack_base", 6, 0.3f);
+                // 플레이어 이미지
+                LoadAnimation(&gPlayer_Animation[(int32_t)OBJECT_STATE::IDLE][dir], playerFolderName + "idle", 6, 0.3f, true);
+                LoadAnimation(&gPlayer_Animation[(int32_t)OBJECT_STATE::WALK][dir], playerFolderName + "walk", 8, 0.3f, true);
+                LoadAnimation(&gPlayer_Animation[(int32_t)OBJECT_STATE::ATTACK][dir], playerFolderName + "attack_base", 6, 0.07f, false);
+                LoadAnimation(&gPlayer_Animation[(int32_t)OBJECT_STATE::ESKILL][dir], playerFolderName + "eSkill", 9, 0.07f, false);
+                LoadAnimation(&gPlayer_Animation[(int32_t)OBJECT_STATE::DAMAGE][dir], playerFolderName + "damage", 4, 0.3f, false);
+                LoadAnimation(&gPlayer_Animation[(int32_t)OBJECT_STATE::DEAD][dir], playerFolderName + "dead", 4, 0.3f, false);
 
-        LoadAnimation(gMonster_Animation[(int32_t)OBJECT_STATE::IDLE][(int32_t)DIR_TYPE::RIGHT], "Monster\\Right\\idle", 6, 0.3f);
-        LoadAnimation(gMonster_Animation[(int32_t)OBJECT_STATE::WALK][(int32_t)DIR_TYPE::RIGHT], "Monster\\Right\\walk", 8, 0.3f);
-        LoadAnimation(gMonster_Animation[(int32_t)OBJECT_STATE::ATTACK][(int32_t)DIR_TYPE::RIGHT], "Monster\\Right\\attack_base", 6, 0.1f);
+                // 몬스터 이미지
+                LoadAnimation(&gMonster_Animation[(int32_t)OBJECT_STATE::IDLE][dir], monsterFolderName + "idle", 6, 0.3f, true);
+                LoadAnimation(&gMonster_Animation[(int32_t)OBJECT_STATE::WALK][dir], monsterFolderName + "walk", 8, 0.3f, true);
+                LoadAnimation(&gMonster_Animation[(int32_t)OBJECT_STATE::ATTACK][dir], monsterFolderName + "attack_base", 6, 0.1f, true);
+            }
+
+            // 화살 이미지
+            gArrowTexture[(int32_t)DIR_TYPE::LEFT] = LoadTexture("Player\\Left\\arrow.bmp");
+            gArrowTexture[(int32_t)DIR_TYPE::RIGHT] = LoadTexture("Player\\Right\\arrow.bmp");
+        }
 
 
         // 키 입력 초기화
@@ -293,13 +332,14 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
         }
 
         // 플레이어 초기화
-        gPlayer = 
+        gPlayer =
         {
             .pos = {.x = float(VIEWSIZE_X / 2.0f - 120.0f), .y = float(VIEWSIZE_Y / 2.0f - 100.0f)},
-            .scale = { .x = 2.5f, .y = 2.5f },
+            .scale = {.x = 2.5f, .y = 2.5f },
             .speed = 100.0f,
             .currDir = DIR_TYPE::RIGHT,
-            .currState = OBJECT_STATE::IDLE
+            .currState = OBJECT_STATE::IDLE,
+            .dead = false
         };
 
         // 몬스터 초기화
@@ -307,12 +347,12 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
         {
             gArrayMonster[i] =
             {
-                .pos = {.x = 80.0f * i, .y = 200.0f},
-                .scale = { .x = 2.5f, .y = 2.5f },
+                .pos = {.x = 120.0f * i, .y = 20.0f},
+                .scale = {.x = 2.5f, .y = 2.5f },
                 .speed = 70.0f,
                 .currDir = DIR_TYPE::RIGHT,
-                .currState = OBJECT_STATE::IDLE
-
+                .currState = OBJECT_STATE::IDLE,
+                .dead = false
             };
         }
     }
@@ -369,42 +409,121 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
                 }
             }
 
-            // 플레이어 업데이트
-            if (gVecKeyInfo[(int32_t)KEY::W].eState == KEY_STATE::HOLD)
-            {
-                gPlayer.pos.y -= gPlayer.speed * gDeltaTime;
-                //gPlayer.currDir = DIR_TYPE::UP;
-                gPlayer.currState = OBJECT_STATE::WALK;
-            }
-            if (gVecKeyInfo[(int32_t)KEY::S].eState == KEY_STATE::HOLD)
-            {
-                gPlayer.pos.y += gPlayer.speed * gDeltaTime;
-                //gPlayer.currDir = DIR_TYPE::DOWN;
-                gPlayer.currState = OBJECT_STATE::WALK;
-            }
-            if (gVecKeyInfo[(int32_t)KEY::A].eState == KEY_STATE::HOLD)
-            {
-                gPlayer.pos.x -= gPlayer.speed * gDeltaTime;
-                gPlayer.currDir = DIR_TYPE::LEFT;
-                gPlayer.currState = OBJECT_STATE::WALK;
-            }
-            if (gVecKeyInfo[(int32_t)KEY::D].eState == KEY_STATE::HOLD)
-            {
-                gPlayer.pos.x += gPlayer.speed * gDeltaTime;
-                gPlayer.currDir = DIR_TYPE::RIGHT;
-                gPlayer.currState = OBJECT_STATE::WALK;
-            }
 
+            // 플레이어 업데이트
             if (gVecKeyInfo[(int32_t)KEY::LBUTTON].eState == KEY_STATE::TAP)
             {
                 gPlayer.currState = OBJECT_STATE::ATTACK;
+                AnimationInit(&gPlayer_Animation[(int32_t)gPlayer.currState][(int32_t)gPlayer.currDir], false);
             }
 
-            if (gVecKeyInfo[(int32_t)KEY::W].eState == KEY_STATE::NONE && gVecKeyInfo[(int32_t)KEY::S].eState == KEY_STATE::NONE &&
-                gVecKeyInfo[(int32_t)KEY::A].eState == KEY_STATE::NONE && gVecKeyInfo[(int32_t)KEY::D].eState == KEY_STATE::NONE &&
-                gVecKeyInfo[(int32_t)KEY::LBUTTON].eState == KEY_STATE::NONE)
+            if (gVecKeyInfo[(int32_t)KEY::Q].eState == KEY_STATE::TAP)
             {
-                gPlayer.currState = OBJECT_STATE::IDLE;
+                gPlayer.currState = OBJECT_STATE::DAMAGE;
+                AnimationInit(&gPlayer_Animation[(int32_t)gPlayer.currState][(int32_t)gPlayer.currDir], false);
+            }
+
+            if (gVecKeyInfo[(int32_t)KEY::V].eState == KEY_STATE::TAP)
+            {
+                gPlayer.currState = OBJECT_STATE::DEAD;
+                gPlayer.dead = true;
+
+                AnimationInit(&gPlayer_Animation[(int32_t)gPlayer.currState][(int32_t)gPlayer.currDir], true);
+            }
+
+            if (gVecKeyInfo[(int32_t)KEY::SPACE].eState == KEY_STATE::TAP)
+            {
+                gPlayer.currState = OBJECT_STATE::ESKILL;
+                AnimationInit(&gPlayer_Animation[(int32_t)gPlayer.currState][(int32_t)gPlayer.currDir], false);
+
+                isArrowUpdate = true;
+            }
+
+            // 화살 업데이트
+            if (gPlayer.currState == OBJECT_STATE::ESKILL && isArrowUpdate)
+            {
+                Animation& eSkill = gPlayer_Animation[(int32_t)OBJECT_STATE::ESKILL][(int32_t)gPlayer.currDir];
+                
+                if (eSkill.currentFrame == 5)
+                {
+                    Arrow arrow =
+                    {
+                        .pos = {.x = gPlayer.pos.x + 100.f, .y = gPlayer.pos.y + 90.0f },
+                        .scale = {.x = 2.0f, .y = 2.0f },
+                        .speed = 200.0f,
+                        .dirPos = {.x = 1.0f, .y = 0.0f },
+                        .curDir = gPlayer.currDir,
+                        .elapsedTime = 0.0f,
+                        .draw = true
+                    };
+
+                    switch (gPlayer.currDir)
+                    {
+                    case DIR_TYPE::LEFT:
+                    {
+                        arrow.dirPos = { .x = -1.0f, .y = 0.0f };
+                        break;
+                    }
+                    case DIR_TYPE::RIGHT:
+                    {
+                        arrow.dirPos = { .x = 1.0f, .y = 0.0f };
+                        break;
+                    }
+                    default:
+                        break;
+                    }
+
+                    gArrow.push_back(arrow);
+
+                    isArrowUpdate = false;
+                }
+            }
+
+            // 플레이어 키 업데이트
+            // 이동할 때
+            if (gPlayer.currState != OBJECT_STATE::ATTACK && gPlayer.currState != OBJECT_STATE::ESKILL 
+                && gPlayer.currState != OBJECT_STATE::DAMAGE && gPlayer.currState != OBJECT_STATE::DEAD)
+            {
+                // 1, -1로만 이루어져 있다
+                int32_t moveDirX = int32_t(gVecKeyInfo[(int32_t)KEY::D].eState == KEY_STATE::HOLD) - int32_t(gVecKeyInfo[(int32_t)KEY::A].eState == KEY_STATE::HOLD);
+                int32_t moveDirY = int32_t(gVecKeyInfo[(int32_t)KEY::S].eState == KEY_STATE::HOLD) - int32_t(gVecKeyInfo[(int32_t)KEY::W].eState == KEY_STATE::HOLD);
+
+                if (bool bMove = moveDirX != 0 or moveDirY != 0;
+                    bMove)
+                {
+                    float velocityX = moveDirX * gPlayer.speed * gDeltaTime;
+                    gPlayer.pos.x += velocityX;
+
+                    float velocityY = moveDirY * gPlayer.speed * gDeltaTime;
+                    gPlayer.pos.y += velocityY;
+
+                    gPlayer.currDir = (moveDirX > 0) ? DIR_TYPE::RIGHT : DIR_TYPE::LEFT; // 삼항 연산자.
+                    gPlayer.currState = OBJECT_STATE::WALK;
+                }
+                else
+                {
+                    gPlayer.currState = OBJECT_STATE::IDLE;
+                }
+            }
+            else  // 이동하지 않을 때
+            {
+                Animation& animation = gPlayer_Animation[(int32_t)gPlayer.currState][(int32_t)gPlayer.currDir];
+
+                if (animation.currentFrame == animation.frameCount - 1 
+                    && animation.elapsedTime >= animation.frameIntervalTime - 0.05f)
+                {
+                    if (gPlayer.currState == OBJECT_STATE::DEAD)
+                    {
+                        continue;
+                    }
+                    else
+                    {
+                        gPlayer.currState = OBJECT_STATE::IDLE;
+
+                        animation.currentFrame = 0;
+                        animation.elapsedTime = 0.0f;
+                    }
+                }
             }
 
             if (gPlayer.currState != gPlayer.prevState || gPlayer.currDir != gPlayer.prevDir)
@@ -413,28 +532,60 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
                 gPlayer.prevDir = gPlayer.currDir;
             }
 
+            {   // 몬스터 업데이트
+                vPoint tracking{ .x = 120.0f, .y = 120.0f };
+                float stop = 50.0f;
+
+                for (Monster& monster : gArrayMonster)
+                {
+                    float dx = gPlayer.pos.x - monster.pos.x;
+                    float dy = gPlayer.pos.y - monster.pos.y;
+
+                    if (dx < 0)
+                    {
+                        monster.currDir = DIR_TYPE::LEFT;
+                    }
+                    else
+                    {
+                        monster.currDir = DIR_TYPE::RIGHT;
+                    }
+
+                    if (abs(dx) <= tracking.x && abs(dy) <= tracking.y) // 추적
+                    {
+                        // 방향 * 거리 = 최종 위치
+                        float distance = sqrtf(dx * dx + dy * dy);
+
+                        if (distance > stop)
+                        {
+                            vPoint dir = { .x = dx / distance, .y = dy / distance };    // 정규화, 방향 정보만 남긴다
+
+                            monster.pos.x += dir.x * monster.speed * gDeltaTime;
+                            monster.pos.y += dir.y * monster.speed * gDeltaTime;
+
+                            monster.currState = OBJECT_STATE::WALK;
+                        }
+                        else
+                        {
+                            monster.currState = OBJECT_STATE::ATTACK;
+                        }
+                    }
+                    else
+                    {
+                        monster.currState = OBJECT_STATE::IDLE;
+                    }
+                }
+            }
+
             // 애니메이션 업데이트
-            for (int32_t i = 0; i < (int32_t)OBJECT_STATE::DAMAGE; ++i)
+            for (int32_t state = 0; state < (int32_t)OBJECT_STATE::END; ++state)
             {
-                for (int32_t j = 0; j < (int32_t)DIR_TYPE::END; ++j)
+                for (int32_t dir = 0; dir < (int32_t)DIR_TYPE::END; ++dir)
                 {
                     // 플레이어
-                    gPlayer_Animation[i][j].accTime += gDeltaTime;
-
-                    if (gPlayer_Animation[i][j].accTime >= gPlayer_Animation[i][j].time)
-                    {
-                        gPlayer_Animation[i][j].accTime = 0.0f;
-                        gPlayer_Animation[i][j].currentFrame = (gPlayer_Animation[i][j].currentFrame + 1) % gPlayer_Animation[i][j].maxFrame;
-                    }
-
+                    AnimationUpdate(&gPlayer_Animation[state][dir]);
+                    
                     // 몬스터
-                    gMonster_Animation[i][j].accTime += gDeltaTime;
-
-                    if (gMonster_Animation[i][j].accTime >= gMonster_Animation[i][j].time)
-                    {
-                        gMonster_Animation[i][j].accTime = 0.0f;
-                        gMonster_Animation[i][j].currentFrame = (gMonster_Animation[i][j].currentFrame + 1) % gMonster_Animation[i][j].maxFrame;
-                    }
+                    AnimationUpdate(&gMonster_Animation[state][dir]);
                 }
             }
         }
@@ -456,6 +607,24 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             for (Monster& monster : gArrayMonster)
             {
                 DrawAnimation(gMonster_Animation[(int32_t)monster.currState][(int32_t)monster.currDir], monster.pos, monster.scale);
+            }
+
+            // 화살 그리기
+            for (Arrow& arrow : gArrow)
+            {
+                if (arrow.draw)
+                {
+                    arrow.pos.x += arrow.dirPos.x * arrow.speed * gDeltaTime;
+                    arrow.elapsedTime += gDeltaTime;
+
+                    if (arrow.elapsedTime >= 2.0f)
+                    {
+                        arrow.draw = false;
+                        arrow.elapsedTime = 0.0f;
+                    }
+
+                    DrawTexture(gArrowTexture[(int32_t)arrow.curDir], arrow.pos, arrow.scale);
+                }
             }
         }
 
@@ -600,20 +769,23 @@ Texture* LoadTexture(const std::string& name)
     return texture;
 }
 
-void DrawTexture(const Texture& texture, const vPoint pos, const vPoint scale)
+void DrawTexture(Texture* texture, const vPoint pos, const vPoint scale)
 {
     TransparentBlt(gMemDC, (int)pos.x, (int)pos.y,
-        (int)(texture.bitInfo.bmWidth * scale.x), (int)(texture.bitInfo.bmHeight * scale.y),
-        texture.hDC, 0, 0, (int)texture.bitInfo.bmWidth, (int)texture.bitInfo.bmHeight, RGB(0, 255, 0));
+        (int)(texture->bitInfo.bmWidth * scale.x), (int)(texture->bitInfo.bmHeight * scale.y),
+        texture->hDC, 0, 0, (int)texture->bitInfo.bmWidth, (int)texture->bitInfo.bmHeight, RGB(0, 255, 0));
 }
 
-void LoadAnimation(Animation& animation, const std::string& name, int32_t maxFrame, float time)
+void LoadAnimation(Animation* animation, const std::string& name, int32_t maxFrame, float time, bool bLoop)
 {
-    animation.texture.reserve(maxFrame);
-    animation.currentFrame = 0;
-    animation.maxFrame = maxFrame;
-    animation.time = time;
-    animation.accTime = 0.0f;
+    assert(animation != nullptr);
+
+    animation->texture.reserve(maxFrame);
+    animation->currentFrame = 0;
+    animation->frameCount = maxFrame;
+    animation->frameIntervalTime = time;
+    animation->elapsedTime = 0.0f;
+    animation->loop = bLoop;
 
     for (int32_t i = 0; i < maxFrame; ++i)
     {
@@ -621,7 +793,7 @@ void LoadAnimation(Animation& animation, const std::string& name, int32_t maxFra
         Texture* texture = LoadTexture(fileName);
         assert(texture != nullptr and "애니메이션 오류");
 
-        animation.texture.push_back(texture);
+        animation->texture.push_back(texture);
     }
 }
 
@@ -633,5 +805,45 @@ void DrawAnimation(const Animation& animation, const vPoint pos, const vPoint sc
     }
 
     Texture* current = animation.texture[animation.currentFrame];
-    DrawTexture(*current, pos, scale);
+    assert(current != nullptr);
+
+    DrawTexture(current, pos, scale);
+}
+
+void AnimationUpdate(Animation* animation)
+{
+    if (animation->texture.empty())
+    {
+        return;
+    }
+
+    animation->elapsedTime += gDeltaTime;
+
+    if (animation->elapsedTime >= animation->frameIntervalTime)
+    {
+        animation->elapsedTime = 0.0f;
+        ++animation->currentFrame;
+
+        if (animation->currentFrame >= animation->frameCount)
+        {
+            if (animation->loop)
+            {
+                animation->currentFrame = 0;
+            }
+            else
+            {
+                if (animation->dead)
+                {
+                    animation->currentFrame = animation->frameCount - 1;
+                }
+            }
+        }
+    }
+}
+
+void AnimationInit(Animation* animation, bool dead)
+{
+    animation->elapsedTime = 0.0f;
+    animation->currentFrame = 0;
+    animation->dead = dead;
 }
