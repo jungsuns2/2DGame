@@ -85,12 +85,10 @@ struct Player
     vPoint scale;
     float speed;
 
-    DIR_TYPE prevDir;
     DIR_TYPE currDir;
-
-    OBJECT_STATE prevState;
     OBJECT_STATE currState;
 
+    bool playing;
     bool dead;
 };
 
@@ -100,10 +98,7 @@ struct Monster
     vPoint scale;
     float speed;
 
-    DIR_TYPE prevDir;
     DIR_TYPE currDir;
-
-    OBJECT_STATE prevState;
     OBJECT_STATE currState;
 
     bool dead;
@@ -178,9 +173,9 @@ static Animation gPlayer_Animation[(int32_t)OBJECT_STATE::END][(int32_t)DIR_TYPE
 static std::vector<Arrow> gArrow;
 static Texture* gArrowTexture[(int32_t)DIR_TYPE::END];
 
+static bool isArrowUpdate;
 static std::array<Monster, MONSTER_COUNT>gArrayMonster;
 static Animation gMonster_Animation[(int32_t)OBJECT_STATE::END][(int32_t)DIR_TYPE::END];
-static bool isArrowUpdate;
 
 static void AnimationInit(Animation* animation, bool dead);
 
@@ -339,6 +334,7 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             .speed = 100.0f,
             .currDir = DIR_TYPE::RIGHT,
             .currState = OBJECT_STATE::IDLE,
+            .playing = false,
             .dead = false
         };
 
@@ -411,10 +407,12 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
 
 
             // 플레이어 업데이트
-            if (gVecKeyInfo[(int32_t)KEY::LBUTTON].eState == KEY_STATE::TAP)
+            if (gVecKeyInfo[(int32_t)KEY::LBUTTON].eState == KEY_STATE::TAP && not gPlayer.playing)
             {
                 gPlayer.currState = OBJECT_STATE::ATTACK;
                 AnimationInit(&gPlayer_Animation[(int32_t)gPlayer.currState][(int32_t)gPlayer.currDir], false);
+
+                gPlayer.playing = true;
             }
 
             if (gVecKeyInfo[(int32_t)KEY::Q].eState == KEY_STATE::TAP)
@@ -428,12 +426,14 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
                 gPlayer.currState = OBJECT_STATE::DEAD;
                 gPlayer.dead = true;
 
-                AnimationInit(&gPlayer_Animation[(int32_t)gPlayer.currState][(int32_t)gPlayer.currDir], true);
+                AnimationInit(&gPlayer_Animation[(int32_t)gPlayer.currState][(int32_t)gPlayer.currDir], gPlayer.dead);
             }
 
-            if (gVecKeyInfo[(int32_t)KEY::SPACE].eState == KEY_STATE::TAP)
+            if (gVecKeyInfo[(int32_t)KEY::SPACE].eState == KEY_STATE::TAP && not gPlayer.playing)
             {
                 gPlayer.currState = OBJECT_STATE::ESKILL;
+                gPlayer.playing = true;
+
                 AnimationInit(&gPlayer_Animation[(int32_t)gPlayer.currState][(int32_t)gPlayer.currDir], false);
 
                 isArrowUpdate = true;
@@ -443,7 +443,7 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             if (gPlayer.currState == OBJECT_STATE::ESKILL && isArrowUpdate)
             {
                 Animation& eSkill = gPlayer_Animation[(int32_t)OBJECT_STATE::ESKILL][(int32_t)gPlayer.currDir];
-                
+
                 if (eSkill.currentFrame == 5)
                 {
                     Arrow arrow =
@@ -481,7 +481,7 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
 
             // 플레이어 키 업데이트
             // 이동할 때
-            if (gPlayer.currState != OBJECT_STATE::ATTACK && gPlayer.currState != OBJECT_STATE::ESKILL 
+            if (gPlayer.currState != OBJECT_STATE::ATTACK && gPlayer.currState != OBJECT_STATE::ESKILL
                 && gPlayer.currState != OBJECT_STATE::DAMAGE && gPlayer.currState != OBJECT_STATE::DEAD)
             {
                 // 1, -1로만 이루어져 있다
@@ -509,7 +509,7 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             {
                 Animation& animation = gPlayer_Animation[(int32_t)gPlayer.currState][(int32_t)gPlayer.currDir];
 
-                if (animation.currentFrame == animation.frameCount - 1 
+                if (animation.currentFrame == animation.frameCount - 1
                     && animation.elapsedTime >= animation.frameIntervalTime - 0.05f)
                 {
                     if (gPlayer.currState == OBJECT_STATE::DEAD)
@@ -519,17 +519,12 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
                     else
                     {
                         gPlayer.currState = OBJECT_STATE::IDLE;
+                        gPlayer.playing = false;
 
                         animation.currentFrame = 0;
                         animation.elapsedTime = 0.0f;
                     }
                 }
-            }
-
-            if (gPlayer.currState != gPlayer.prevState || gPlayer.currDir != gPlayer.prevDir)
-            {
-                gPlayer.prevState = gPlayer.currState;
-                gPlayer.prevDir = gPlayer.currDir;
             }
 
             {   // 몬스터 업데이트
@@ -550,11 +545,16 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
                         monster.currDir = DIR_TYPE::RIGHT;
                     }
 
+                    // 방향 * 거리 = 최종 위치
+                    float distance = sqrtf(dx * dx + dy * dy);
+
+                    if (distance > (tracking.x * 2.0f) || distance > (tracking.y * 2.0f))
+                    {
+                        continue;
+                    }
+
                     if (abs(dx) <= tracking.x && abs(dy) <= tracking.y) // 추적
                     {
-                        // 방향 * 거리 = 최종 위치
-                        float distance = sqrtf(dx * dx + dy * dy);
-
                         if (distance > stop)
                         {
                             vPoint dir = { .x = dx / distance, .y = dy / distance };    // 정규화, 방향 정보만 남긴다
@@ -583,7 +583,7 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
                 {
                     // 플레이어
                     AnimationUpdate(&gPlayer_Animation[state][dir]);
-                    
+
                     // 몬스터
                     AnimationUpdate(&gMonster_Animation[state][dir]);
                 }
@@ -663,13 +663,13 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
     }
 
     // 선택
-    SelectObject(gMemDC, hOldBit); 
+    SelectObject(gMemDC, hOldBit);
 
     // 해제
     ReleaseDC(gHWnd, gHDC);
     DeleteDC(gMemDC);
     DeleteObject(hBitmap);
-    
+
 
     // 리소스 해제
     for (auto& iter : gMapTexture)
@@ -683,7 +683,7 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
         delete iter.second;
     }
 
-    return (int) msg.wParam;
+    return (int)msg.wParam;
 }
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -691,28 +691,28 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     switch (message)
     {
     case WM_COMMAND:
+    {
+        int wmId = LOWORD(wParam);
+        switch (wmId)
         {
-            int wmId = LOWORD(wParam);
-            switch (wmId)
-            {
-            case IDM_ABOUT:
-                DialogBox(gHInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);
-                break;
-            case IDM_EXIT:
-                DestroyWindow(hWnd);
-                break;
-            default:
-                return DefWindowProc(hWnd, message, wParam, lParam);
-            }
+        case IDM_ABOUT:
+            DialogBox(gHInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);
+            break;
+        case IDM_EXIT:
+            DestroyWindow(hWnd);
+            break;
+        default:
+            return DefWindowProc(hWnd, message, wParam, lParam);
         }
-        break;
+    }
+    break;
     case WM_PAINT:
-        {
-            PAINTSTRUCT ps;
-            HDC hdc = BeginPaint(hWnd, &ps);
-            EndPaint(hWnd, &ps);
-        }
-        break;
+    {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hWnd, &ps);
+        EndPaint(hWnd, &ps);
+    }
+    break;
     case WM_DESTROY:
         PostQuitMessage(0);
         break;
