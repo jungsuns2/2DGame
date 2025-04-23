@@ -85,7 +85,10 @@ struct Player
     vPoint scale;
     float speed;
 
+    DIR_TYPE prevDir;
     DIR_TYPE currDir;
+
+    OBJECT_STATE prevState;
     OBJECT_STATE currState;
 
     bool dead;
@@ -97,7 +100,10 @@ struct Monster
     vPoint scale;
     float speed;
 
+    DIR_TYPE prevDir;
     DIR_TYPE currDir;
+
+    OBJECT_STATE prevState;
     OBJECT_STATE currState;
 
     bool dead;
@@ -422,7 +428,7 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
                 gPlayer.currState = OBJECT_STATE::DEAD;
                 gPlayer.dead = true;
 
-                AnimationInit(&gPlayer_Animation[(int32_t)gPlayer.currState][(int32_t)gPlayer.currDir], gPlayer.dead);
+                AnimationInit(&gPlayer_Animation[(int32_t)gPlayer.currState][(int32_t)gPlayer.currDir], true);
             }
 
             if (gVecKeyInfo[(int32_t)KEY::SPACE].eState == KEY_STATE::TAP)
@@ -518,6 +524,12 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
                         animation.elapsedTime = 0.0f;
                     }
                 }
+            }
+
+            if (gPlayer.currState != gPlayer.prevState || gPlayer.currDir != gPlayer.prevDir)
+            {
+                gPlayer.prevState = gPlayer.currState;
+                gPlayer.prevDir = gPlayer.currDir;
             }
 
             {   // 몬스터 업데이트
