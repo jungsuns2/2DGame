@@ -482,6 +482,8 @@ void LoadAnimation(Animation* animation, const std::string& name, int32_t maxFra
 
 void InitializeAnimation(Animation* animation, bool dead)
 {
+    assert(animation != nullptr);
+
     animation->elapsedTime = 0.0f;
     animation->currentFrame = 0;
     animation->dead = dead;
@@ -489,6 +491,8 @@ void InitializeAnimation(Animation* animation, bool dead)
 
 void UpdateAnimation(Animation* animation)
 {
+    assert(animation != nullptr);
+
     if (animation->texture.empty())
     {
         return;
