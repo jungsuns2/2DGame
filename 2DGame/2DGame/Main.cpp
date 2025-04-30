@@ -45,11 +45,19 @@ enum class KEY
     END,
 };
 
+enum class OBJECT_TYPE
+{
+    PLAYER,
+    MONSTER,
+
+    END
+};
+
 enum class KEY_STATE
 {
     NONE,
     TAP,
-    HOLD,
+    HOLD, 
     AWAY,
 };
 
@@ -58,6 +66,7 @@ enum class OBJECT_STATE
     IDLE,
     WALK,
     ATTACK,
+    SPACESKILL,
     ESKILL,
     DAMAGE,
     DEAD,
@@ -79,8 +88,10 @@ struct Texture
     BITMAP bitInfo;
 };
 
-struct Player
+struct OBJECT
 {
+    OBJECT_TYPE type;
+
     vPoint pos;
     vPoint scale;
     float speed;
@@ -88,21 +99,8 @@ struct Player
     DIR_TYPE currDir;
     OBJECT_STATE currState;
 
-    bool attacking;
-    bool dead;
-};
-
-struct Monster
-{
-    vPoint pos;
-    vPoint scale;
-    float speed;
-
-    DIR_TYPE currDir;
-    OBJECT_STATE currState;
-
-    bool attacking;
-    bool dead;
+    bool isAttacking;
+    bool isDead;
 };
 
 struct Arrow
@@ -116,7 +114,7 @@ struct Arrow
 
     float elapsedTime;
 
-    bool active;
+    bool isActive;
 };
 
 struct KeyInfo
@@ -130,10 +128,22 @@ struct Animation
     std::vector<Texture*> texture;
     int32_t currentFrame;
     int32_t frameCount;
+    
     float frameIntervalTime;
     float elapsedTime;
-    bool loop;
-    bool dead;
+    
+    bool isLoop;
+};
+
+struct Collider
+{
+    vPoint offsetPos;
+    vPoint finalPos;
+    vPoint scale;
+    int32_t id;
+
+    HPEN penColor;
+    bool isPen;
 };
 
 // ===============================================================
@@ -145,9 +155,11 @@ static Texture* LoadTexture(const std::string& name);
 static void DrawTexture(const Texture& texture, const vPoint pos, const vPoint scale);
 
 static void LoadAnimation(Animation* animation, const std::string& name, int32_t maxFrame, float time, bool bLoop);
-static void InitializeAnimation(Animation* animation, bool dead);
+static void ResetAnimation(Animation* animation);
 static void DrawAnimation(const Animation& animation, const vPoint pos, const vPoint scale);
 static void UpdateAnimation(Animation* animation);
+static void UpdateArrows(OBJECT_STATE objectState, std::vector<Arrow>* inactivateArrows, std::vector<Arrow>* activeArrows, bool isESkill);
+static Arrow CreateArrow(float dirX, float offsetY);
 
 static void Initialize();
 static void Update();
@@ -172,20 +184,22 @@ static HDC gMemDC;
 
 static std::unordered_map<std::string, Texture*> gMapTextures;
 
-static Player gPlayerInformation;
+static OBJECT gPlayerInformation;
 static Animation gPlayerAnimations[(int32_t)OBJECT_STATE::END][(int32_t)DIR_TYPE::END];
 
-static std::vector<Arrow> gArrowsInformation;
+static std::vector<Arrow> gActivateSpaceSkill;
+static std::vector<Arrow> gInactivateSpaceSkill;
+static std::vector<Arrow> gActivateESkill;
+static std::vector<Arrow> gInactivateESkill;
 static Texture* gArrowTextures[(int32_t)DIR_TYPE::END];
 
-static bool arrowFired;
-static std::array<Monster, MONSTER_COUNT>gMonstersInformation;
+static bool gArrowFired;
+static std::array<OBJECT, MONSTER_COUNT>gMonstersInformation;
 static Animation gMonsterAnimations[(int32_t)OBJECT_STATE::END][(int32_t)DIR_TYPE::END];
 
 static std::vector<KeyInfo> gVecKeyInfo;
 
 static float gDeltaTime;
-
 
 constexpr int32_t KeyMaps[(int32_t)KEY::END]
 {
@@ -218,7 +232,6 @@ constexpr int32_t KeyMaps[(int32_t)KEY::END]
     VK_RBUTTON,
 };
 // ==========================================================
-
 
 // 윈메인
 int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine, _In_ int nCmdShow)
@@ -468,7 +481,7 @@ void LoadAnimation(Animation* animation, const std::string& name, int32_t maxFra
     animation->frameCount = maxFrame;
     animation->frameIntervalTime = time;
     animation->elapsedTime = 0.0f;
-    animation->loop = bLoop;
+    animation->isLoop = bLoop;
 
     for (int64_t i = 0; i < maxFrame; ++i)
     {
@@ -480,13 +493,12 @@ void LoadAnimation(Animation* animation, const std::string& name, int32_t maxFra
     }
 }
 
-void InitializeAnimation(Animation* animation, bool dead)
+void ResetAnimation(Animation* animation)
 {
     assert(animation != nullptr);
 
     animation->elapsedTime = 0.0f;
     animation->currentFrame = 0;
-    animation->dead = dead;
 }
 
 void UpdateAnimation(Animation* animation)
@@ -507,19 +519,102 @@ void UpdateAnimation(Animation* animation)
 
         if (animation->currentFrame >= animation->frameCount)
         {
-            if (animation->loop)
+            if (animation->isLoop)
             {
                 animation->currentFrame = 0;
             }
             else
             {
-                if (animation->dead)
-                {
-                    animation->currentFrame = animation->frameCount - 1;
-                }
+                animation->currentFrame = animation->frameCount - 1;
             }
         }
     }
+}
+
+void UpdateArrows(OBJECT_STATE objectState, std::vector<Arrow>* inactivateArrows, std::vector<Arrow>* activeArrows, bool isESkill)
+{
+    if ((gPlayerInformation.currState == objectState) and gArrowFired)
+    {
+        Animation& keySkill = gPlayerAnimations[(int32_t)objectState][(int32_t)gPlayerInformation.currDir];
+        float dirX = (gPlayerInformation.currDir == DIR_TYPE::LEFT) ? -1.0f : 1.0f;
+        Arrow recyclingArrow{};
+
+        constexpr int32_t ARROW_COUNT = 3;
+        constexpr float ARROW_INTERVAL = 20.0f;
+
+        if (keySkill.currentFrame == 5)
+        {
+            if (isESkill)
+            {
+                for (int32_t cnt = 0; cnt < ARROW_COUNT; ++cnt)
+                {
+                    float offsetY = (cnt - 1) * ARROW_INTERVAL;
+
+                    // TODO: 함수로 만들까?
+                    if (not inactivateArrows->empty())
+                    {
+                        recyclingArrow = std::move(inactivateArrows->back());
+                        inactivateArrows->pop_back();
+                    }
+
+                    recyclingArrow = CreateArrow(dirX, offsetY);
+                    activeArrows->push_back(std::move(recyclingArrow));
+                }
+            }
+            else
+            {
+                if (not inactivateArrows->empty())
+                {
+                    recyclingArrow = std::move(inactivateArrows->back());
+                    inactivateArrows->pop_back();
+                }
+
+                recyclingArrow = CreateArrow(dirX, 0.0f);
+                activeArrows->push_back(std::move(recyclingArrow));
+            }
+
+            gArrowFired = false; // 한 번만 그려지도록
+        }
+    }
+
+    // 화살 이동 업데이트
+    for (auto arrowIter = activeArrows->begin(); arrowIter != activeArrows->end();)
+    {
+        Arrow& currentArrow = *arrowIter;
+
+        if (currentArrow.isActive)
+        {
+            currentArrow.pos.x += currentArrow.dirPos.x * currentArrow.speed * gDeltaTime;
+            currentArrow.elapsedTime += gDeltaTime;
+
+            if (currentArrow.elapsedTime >= 2.0f)
+            {
+                currentArrow.isActive = false;
+                currentArrow.elapsedTime = 0.0f;
+
+                inactivateArrows->push_back(std::move(currentArrow));
+                arrowIter = activeArrows->erase(arrowIter);   // 지우면 다음 번째를 가리키게 된다.
+                continue;
+            }
+        }
+
+        ++arrowIter;
+    }
+}
+
+Arrow CreateArrow(float dirX, float offsetY)
+{
+    return 
+    {
+        .pos = {.x = gPlayerInformation.pos.x + 100.f, .y = (gPlayerInformation.pos.y + 90.0f) + offsetY },
+        .scale = {.x = 2.0f, .y = 2.0f },
+        .speed = 200.0f,
+        .dirPos = {.x = dirX, .y = 0.0f },
+        .curDir = gPlayerInformation.currDir,
+        .elapsedTime = 0.0f,
+        .isActive = true
+    };
+
 }
 
 void DrawAnimation(const Animation& animation, const vPoint pos, const vPoint scale)
@@ -550,6 +645,7 @@ void Initialize()
         LoadAnimation(&gPlayerAnimations[(int32_t)OBJECT_STATE::IDLE][dir], playerFolderName + "idle", 6, 0.3f, true);
         LoadAnimation(&gPlayerAnimations[(int32_t)OBJECT_STATE::WALK][dir], playerFolderName + "walk", 8, 0.3f, true);
         LoadAnimation(&gPlayerAnimations[(int32_t)OBJECT_STATE::ATTACK][dir], playerFolderName + "attack_base", 6, 0.07f, false);
+        LoadAnimation(&gPlayerAnimations[(int32_t)OBJECT_STATE::SPACESKILL][dir], playerFolderName + "eSkill", 9, 0.07f, false);
         LoadAnimation(&gPlayerAnimations[(int32_t)OBJECT_STATE::ESKILL][dir], playerFolderName + "eSkill", 9, 0.07f, false);
         LoadAnimation(&gPlayerAnimations[(int32_t)OBJECT_STATE::DAMAGE][dir], playerFolderName + "damage", 4, 0.3f, false);
         LoadAnimation(&gPlayerAnimations[(int32_t)OBJECT_STATE::DEAD][dir], playerFolderName + "dead", 4, 0.3f, false);
@@ -560,10 +656,17 @@ void Initialize()
         LoadAnimation(&gMonsterAnimations[(int32_t)OBJECT_STATE::ATTACK][dir], monsterFolderName + "attack_base", 6, 0.1f, true);
     }
 
-    // 화살 이미지
-    gArrowTextures[(int32_t)DIR_TYPE::LEFT] = LoadTexture("Player\\Left\\arrow.bmp");
-    gArrowTextures[(int32_t)DIR_TYPE::RIGHT] = LoadTexture("Player\\Right\\arrow.bmp");
-  
+    // 화살 초기화
+    {
+        gArrowTextures[(int32_t)DIR_TYPE::LEFT] = LoadTexture("Player\\Left\\arrow.bmp");
+        gArrowTextures[(int32_t)DIR_TYPE::RIGHT] = LoadTexture("Player\\Right\\arrow.bmp");
+
+        gActivateSpaceSkill.reserve(3);
+        gInactivateSpaceSkill.reserve(3);
+
+        gActivateESkill.reserve(9);
+        gInactivateESkill.reserve(9);
+    }
 
     // 키 입력 초기화
     for (int32_t i = 0; i < (int32_t)KEY::END; ++i)
@@ -574,13 +677,14 @@ void Initialize()
     // 플레이어 초기화
     gPlayerInformation =
     {
+        .type = OBJECT_TYPE::PLAYER,
         .pos = {.x = float(VIEWSIZE_X / 2.0f - 120.0f), .y = float(VIEWSIZE_Y / 2.0f - 100.0f)},
         .scale = {.x = 2.5f, .y = 2.5f },
         .speed = 100.0f,
         .currDir = DIR_TYPE::RIGHT,
         .currState = OBJECT_STATE::IDLE,
-        .attacking = false,
-        .dead = false
+        .isAttacking = false,
+        .isDead = false
     };
 
     // 몬스터 초기화
@@ -588,13 +692,14 @@ void Initialize()
     {
         gMonstersInformation[i] =
         {
+            .type = OBJECT_TYPE::MONSTER,
             .pos = {.x = 120.0f * i, .y = 20.0f},
             .scale = {.x = 2.5f, .y = 2.5f },
             .speed = 70.0f,
             .currDir = DIR_TYPE::RIGHT,
             .currState = OBJECT_STATE::IDLE,
-            .attacking = false,
-            .dead = false
+            .isAttacking = false,
+            .isDead = false
         };
     }
 }
@@ -633,43 +738,53 @@ void Update()
     }
 
     // 플레이어 키 업데이트
-    if (gVecKeyInfo[(int32_t)KEY::LBUTTON].eState == KEY_STATE::TAP and not gPlayerInformation.attacking)
+    if (gVecKeyInfo[(int32_t)KEY::LBUTTON].eState == KEY_STATE::TAP and not gPlayerInformation.isAttacking)
     {
         gPlayerInformation.currState = OBJECT_STATE::ATTACK;
-        InitializeAnimation(&gPlayerAnimations[(int32_t)gPlayerInformation.currState][(int32_t)gPlayerInformation.currDir], false);
+        ResetAnimation(&gPlayerAnimations[(int32_t)gPlayerInformation.currState][(int32_t)gPlayerInformation.currDir]);
 
-        gPlayerInformation.attacking = true;
+        gPlayerInformation.isAttacking = true;
     }
 
     if (gVecKeyInfo[(int32_t)KEY::Q].eState == KEY_STATE::TAP)
     {
         gPlayerInformation.currState = OBJECT_STATE::DAMAGE;
-        InitializeAnimation(&gPlayerAnimations[(int32_t)gPlayerInformation.currState][(int32_t)gPlayerInformation.currDir], false);
+        ResetAnimation(&gPlayerAnimations[(int32_t)gPlayerInformation.currState][(int32_t)gPlayerInformation.currDir]);
     }
 
     if (gVecKeyInfo[(int32_t)KEY::V].eState == KEY_STATE::TAP)
     {
         gPlayerInformation.currState = OBJECT_STATE::DEAD;
-        gPlayerInformation.dead = true;
+        gPlayerInformation.isDead = true;
 
-        InitializeAnimation(&gPlayerAnimations[(int32_t)gPlayerInformation.currState][(int32_t)gPlayerInformation.currDir], gPlayerInformation.dead);
+        ResetAnimation(&gPlayerAnimations[(int32_t)gPlayerInformation.currState][(int32_t)gPlayerInformation.currDir]);
     }
 
-    if (gVecKeyInfo[(int32_t)KEY::SPACE].eState == KEY_STATE::TAP and not gPlayerInformation.attacking)
+    if (gVecKeyInfo[(int32_t)KEY::SPACE].eState == KEY_STATE::TAP and not gPlayerInformation.isAttacking)
+    {
+        gPlayerInformation.currState = OBJECT_STATE::SPACESKILL;
+        gPlayerInformation.isAttacking = true;
+
+        ResetAnimation(&gPlayerAnimations[(int32_t)gPlayerInformation.currState][(int32_t)gPlayerInformation.currDir]);
+
+        gArrowFired = true;
+    }
+
+    if (gVecKeyInfo[(int32_t)KEY::E].eState == KEY_STATE::TAP and not gPlayerInformation.isAttacking)
     {
         gPlayerInformation.currState = OBJECT_STATE::ESKILL;
-        gPlayerInformation.attacking = true;
+        gPlayerInformation.isAttacking = true;
 
-        InitializeAnimation(&gPlayerAnimations[(int32_t)gPlayerInformation.currState][(int32_t)gPlayerInformation.currDir], false);
+        ResetAnimation(&gPlayerAnimations[(int32_t)gPlayerInformation.currState][(int32_t)gPlayerInformation.currDir]);
 
-        arrowFired = true;
+        gArrowFired = true;
     }
 
     int32_t moveDirX = int32_t(gVecKeyInfo[(int32_t)KEY::D].eState == KEY_STATE::HOLD) - int32_t(gVecKeyInfo[(int32_t)KEY::A].eState == KEY_STATE::HOLD);
     int32_t moveDirY = int32_t(gVecKeyInfo[(int32_t)KEY::S].eState == KEY_STATE::HOLD) - int32_t(gVecKeyInfo[(int32_t)KEY::W].eState == KEY_STATE::HOLD);
-    bool PressMovingKey = (moveDirX != 0 or moveDirY != 0);
+    bool pressingMoveKey = (moveDirX != 0 or moveDirY != 0);
 
-    if (PressMovingKey and (not gPlayerInformation.attacking))
+    if (pressingMoveKey and (not gPlayerInformation.isAttacking))
     {
         float velocityX = moveDirX * gPlayerInformation.speed * gDeltaTime;
         gPlayerInformation.pos.x += velocityX;
@@ -690,94 +805,36 @@ void Update()
         {
             gPlayerInformation.currState = OBJECT_STATE::IDLE;
         }
-
-        Animation& animation = gPlayerAnimations[(int32_t)gPlayerInformation.currState][(int32_t)gPlayerInformation.currDir];
-
-        if (animation.currentFrame == animation.frameCount - 1
-            and animation.elapsedTime >= animation.frameIntervalTime - 0.05f)
+        else
         {
-            if (not(gPlayerInformation.currState == OBJECT_STATE::DEAD))
-            {
-                gPlayerInformation.currState = OBJECT_STATE::IDLE;
-                gPlayerInformation.attacking = false;
+            Animation& animation = gPlayerAnimations[(int32_t)gPlayerInformation.currState][(int32_t)gPlayerInformation.currDir];
 
+            if (animation.currentFrame == animation.frameCount - 1
+                and animation.elapsedTime >= animation.frameIntervalTime - 0.05f)
+            {
+                if (gPlayerInformation.currState != OBJECT_STATE::DEAD)
+                {
+                    gPlayerInformation.currState = OBJECT_STATE::IDLE;
+                    gPlayerInformation.isAttacking = false;
+                }
             }
         }
     }
     
     // 화살 업데이트
-    if (gPlayerInformation.currState == OBJECT_STATE::ESKILL and arrowFired)
-    {
-        Animation& eSkill = gPlayerAnimations[(int32_t)OBJECT_STATE::ESKILL][(int32_t)gPlayerInformation.currDir];
+    // move는 복사X, 소유권 이전O
+    UpdateArrows(OBJECT_STATE::SPACESKILL, &gInactivateSpaceSkill, &gActivateSpaceSkill, false);
+    UpdateArrows(OBJECT_STATE::ESKILL, &gInactivateESkill, &gActivateESkill, true);
 
-        if (eSkill.currentFrame == 5)
-        {
-            float dirX = (gPlayerInformation.currDir == DIR_TYPE::LEFT) ? -1.0f : 1.0f;
-            bool Recycling = false;
 
-            for (Arrow& currentArrows : gArrowsInformation)
-            {
-                if (not currentArrows.active)
-                {
-                    currentArrows =
-                    {
-                        .pos = {.x = gPlayerInformation.pos.x + 100.f, .y = gPlayerInformation.pos.y + 90.0f },
-                        .scale = {.x = 2.0f, .y = 2.0f },
-                        .speed = 200.0f,
-                        .dirPos = {.x = dirX, .y = 0.0f },
-                        .curDir = gPlayerInformation.currDir,
-                        .elapsedTime = 0.0f,
-                        .active = true   // 바로 그려지니까
-                    };
+    std::cout << "Active: " << gActivateESkill.size() << std::endl;
+    std::cout << "Inactivate: " << gInactivateESkill.size() << std::endl;
 
-                    Recycling = true;
-                    break;
-                }
-            }
-
-            if (!Recycling)
-            {
-                Arrow newArrow =
-                {
-                    .pos = {.x = gPlayerInformation.pos.x + 100.f, .y = gPlayerInformation.pos.y + 90.0f },
-                    .scale = {.x = 2.0f, .y = 2.0f },
-                    .speed = 200.0f,
-                    .dirPos = {.x = dirX, .y = 0.0f },
-                    .curDir = gPlayerInformation.currDir,
-                    .elapsedTime = 0.0f,
-                    .active = true   // 바로 그려지니까
-                };
-
-                gArrowsInformation.push_back(newArrow);
-            }
-
-            arrowFired = false; // 한 번만 그려지도록
-        }
-
-        //std::cout << gArrows.size() << std::endl;
-    }
-
-    // 화살 이동
-    for (Arrow& move : gArrowsInformation)
-    {
-        if (move.active)
-        {
-            move.pos.x += move.dirPos.x * move.speed * gDeltaTime;
-            move.elapsedTime += gDeltaTime;
-
-            if (move.elapsedTime >= 2.0f)
-            {
-                move.active = false;
-                move.elapsedTime = 0.0f;
-            }
-        }
-    }
-    
     // 몬스터 업데이트
     constexpr float TRACKING_RANGE_SQRTF = 120.0f * 120.0f;
     constexpr float STOP_DISTANCE_SQRTF = 50.0f * 50.0f;
 
-    for (Monster& monster : gMonstersInformation)
+    for (OBJECT& monster : gMonstersInformation)
     {
         float dx = gPlayerInformation.pos.x - monster.pos.x;
         float dy = gPlayerInformation.pos.y - monster.pos.y;
@@ -785,24 +842,24 @@ void Update()
         // 방향 * 거리 = 최종 위치
         float distanceSqrtf = dx * dx + dy * dy;
 
-        if (distanceSqrtf <= TRACKING_RANGE_SQRTF)
+        if (distanceSqrtf > TRACKING_RANGE_SQRTF)
+        {
+            monster.currState = OBJECT_STATE::IDLE;
+            monster.isAttacking = false;
+            continue;
+        }
+        else
         {
             monster.currDir = (dx < 0) ? DIR_TYPE::LEFT : DIR_TYPE::RIGHT;
         }
 
-        if (distanceSqrtf > TRACKING_RANGE_SQRTF)
+        if (bool bTrackingable = (abs(dx) <= 120.0f and abs(dy) <= 120.0f);
+            bTrackingable)
         {
-            monster.currState = OBJECT_STATE::IDLE;
-            monster.attacking = false;
-            continue;
-        }
-
-        if (abs(dx) <= 120.0f and abs(dy) <= 120.0f) // 추적
-        {
-            if ((distanceSqrtf > STOP_DISTANCE_SQRTF) and (not monster.attacking))
+            if (distanceSqrtf > STOP_DISTANCE_SQRTF and (not monster.isAttacking))
             {
                 float len = sqrtf(distanceSqrtf);
-                vPoint dir = { .x = dx / len, .y = dy / len };    // 정규화, 방향 정보만 남긴다
+                vPoint dir = { .x = dx / len, .y = dy / len }; // 정규화, 방향 정보만 남긴다.
 
                 monster.pos.x += dir.x * monster.speed * gDeltaTime;
                 monster.pos.y += dir.y * monster.speed * gDeltaTime;
@@ -812,13 +869,22 @@ void Update()
             else
             {
                 monster.currState = OBJECT_STATE::ATTACK;
-                monster.attacking = true;
+                monster.isAttacking = true;
+                
+                Animation& animation = gMonsterAnimations[(int32_t)monster.currState][(int32_t)monster.currDir];
+                
+                if (animation.currentFrame == animation.frameCount - 1
+                    and animation.elapsedTime >= animation.frameIntervalTime - 0.05f)
+                {
+                    monster.isAttacking = false;
+                    ResetAnimation(&animation);
+                }
             }
         }
         else
         {
             monster.currState = OBJECT_STATE::IDLE;
-            monster.attacking = false;
+            monster.isAttacking = false;
         }
     }
   
@@ -851,15 +917,24 @@ void Draw()
     DrawAnimation(gPlayerAnimations[(int32_t)gPlayerInformation.currState][(int32_t)gPlayerInformation.currDir], gPlayerInformation.pos, gPlayerInformation.scale);
 
     // 몬스터 그리기
-    for (Monster& monster : gMonstersInformation)
+    for (OBJECT& monster : gMonstersInformation)
     {
         DrawAnimation(gMonsterAnimations[(int32_t)monster.currState][(int32_t)monster.currDir], monster.pos, monster.scale);
     }
 
-    // 화살 그리기
-    for (Arrow& arrow : gArrowsInformation)
+    // 화살 그리기 SpaceSkill
+    for (Arrow& arrow : gActivateSpaceSkill)
     {
-        if (arrow.active)
+        if (arrow.isActive)
+        {
+            DrawTexture(*gArrowTextures[(int32_t)arrow.curDir], arrow.pos, arrow.scale);
+        }
+    }
+
+    // 화살 그리기 ESkill
+    for (Arrow& arrow : gActivateESkill)
+    {
+        if (arrow.isActive)
         {
             DrawTexture(*gArrowTextures[(int32_t)arrow.curDir], arrow.pos, arrow.scale);
         }
