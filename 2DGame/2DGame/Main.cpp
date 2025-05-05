@@ -48,6 +48,7 @@ enum class KEY
 enum class OBJECT_TYPE
 {
     PLAYER,
+    ARROW,
     MONSTER,
 
     END
@@ -105,6 +106,8 @@ struct OBJECT
 
 struct Arrow
 {
+    OBJECT_TYPE type;
+
     vPoint pos;
     vPoint scale;
     float speed;
@@ -113,8 +116,7 @@ struct Arrow
     DIR_TYPE curDir;
 
     float elapsedTime;
-
-    bool isActive;
+    float fireTime;
 };
 
 struct KeyInfo
@@ -141,9 +143,6 @@ struct Collider
     vPoint finalPos;
     vPoint scale;
     int32_t id;
-
-    HPEN penColor;
-    bool isPen;
 };
 
 // ===============================================================
@@ -159,10 +158,12 @@ static void ResetAnimation(Animation* animation);
 static void DrawAnimation(const Animation& animation, const vPoint pos, const vPoint scale);
 static void UpdateAnimation(Animation* animation);
 static void UpdateArrows(OBJECT_STATE objectState, std::vector<Arrow>* inactivateArrows, std::vector<Arrow>* activeArrows, bool isESkill);
-static Arrow CreateArrow(float dirX, float offsetY);
+static Arrow CreateArrow(float offsetX, float offsetY, float fireTime);
+static void CheckCollisionType(OBJECT_TYPE typeA, OBJECT_TYPE typeB, const std::unordered_map<OBJECT_TYPE, std::vector<Collider>>& colliderGroups);
 
 static void Initialize();
 static void Update();
+static void FinalUpdate();
 static void Draw();
 static void Finalize();
 
@@ -182,6 +183,23 @@ static HWND gHWnd;
 static HDC gHDC;
 static HDC gMemDC;
 
+static HBITMAP gBitmap;
+static HBITMAP gOldBit;
+
+// 배경색
+static HBRUSH gBackGroundBrush;
+static HBRUSH gBackGroundOldBrush;
+
+// 충돌 박스
+static HPEN gColloderPenColor;
+static HBRUSH gColliderhollowBrush;
+static HBRUSH gColloderOldBrush;
+static bool gIsPen;
+
+static float gDeltaTime;
+
+static std::vector<KeyInfo> gVecKeyInfo;
+
 static std::unordered_map<std::string, Texture*> gMapTextures;
 
 static OBJECT gPlayerInformation;
@@ -192,14 +210,13 @@ static std::vector<Arrow> gInactivateSpaceSkill;
 static std::vector<Arrow> gActivateESkill;
 static std::vector<Arrow> gInactivateESkill;
 static Texture* gArrowTextures[(int32_t)DIR_TYPE::END];
-
 static bool gArrowFired;
+
 static std::array<OBJECT, MONSTER_COUNT>gMonstersInformation;
 static Animation gMonsterAnimations[(int32_t)OBJECT_STATE::END][(int32_t)DIR_TYPE::END];
 
-static std::vector<KeyInfo> gVecKeyInfo;
-
-static float gDeltaTime;
+static std::unordered_map<OBJECT_TYPE, std::vector<Collider>> gMapColliders;
+static bool gIsCollider;
 
 constexpr int32_t KeyMaps[(int32_t)KEY::END]
 {
@@ -303,8 +320,8 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
     gHDC = GetDC(gHWnd);
     gMemDC = CreateCompatibleDC(gHDC);
 
-    HBITMAP hBitmap = CreateCompatibleBitmap(gHDC, VIEWSIZE_X, VIEWSIZE_Y);
-    HBITMAP hOldBit = (HBITMAP)SelectObject(gMemDC, hBitmap);
+    gBitmap = CreateCompatibleBitmap(gHDC, VIEWSIZE_X, VIEWSIZE_Y);
+    gOldBit = (HBITMAP)SelectObject(gMemDC, gBitmap);
 
     // 초기화
     Initialize();
@@ -331,6 +348,7 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
 
         // 업데이트
         Update(); 
+        FinalUpdate();
 
         // 그리기
         Draw();
@@ -368,14 +386,6 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
 
         gDeltaTime = duration_cast<milliseconds>(high_resolution_clock::now() - startTime).count() * 0.001f;
     }
-
-    // 선택
-    SelectObject(gMemDC, hOldBit);
-
-    // 해제
-    ReleaseDC(gHWnd, gHDC);
-    DeleteDC(gMemDC);
-    DeleteObject(hBitmap);
 
     Finalize();
 
@@ -536,11 +546,12 @@ void UpdateArrows(OBJECT_STATE objectState, std::vector<Arrow>* inactivateArrows
     if ((gPlayerInformation.currState == objectState) and gArrowFired)
     {
         Animation& keySkill = gPlayerAnimations[(int32_t)objectState][(int32_t)gPlayerInformation.currDir];
-        float dirX = (gPlayerInformation.currDir == DIR_TYPE::LEFT) ? -1.0f : 1.0f;
-        Arrow recyclingArrow{};
 
         constexpr int32_t ARROW_COUNT = 3;
-        constexpr float ARROW_INTERVAL = 20.0f;
+        constexpr float ARROW_INTERVAL_X = 10.0f;
+        constexpr float ARROW_INTERVAL_Y = 20.0f;
+
+        Arrow recyclingArrows{};
 
         if (keySkill.currentFrame == 5)
         {
@@ -548,29 +559,40 @@ void UpdateArrows(OBJECT_STATE objectState, std::vector<Arrow>* inactivateArrows
             {
                 for (int32_t cnt = 0; cnt < ARROW_COUNT; ++cnt)
                 {
-                    float offsetY = (cnt - 1) * ARROW_INTERVAL;
+                   float offsetX = (cnt - 1) * ARROW_INTERVAL_X;
+                   float offsetY = (cnt - 1) * ARROW_INTERVAL_Y;
 
-                    // TODO: 함수로 만들까?
-                    if (not inactivateArrows->empty())
-                    {
-                        recyclingArrow = std::move(inactivateArrows->back());
-                        inactivateArrows->pop_back();
-                    }
+                   if (not inactivateArrows->empty())
+                   {
+                       recyclingArrows = std::move(inactivateArrows->back());
+                       inactivateArrows->pop_back();
+                   }
+                   else
+                   {
+                       recyclingArrows = {};
+                   }
 
-                    recyclingArrow = CreateArrow(dirX, offsetY);
-                    activeArrows->push_back(std::move(recyclingArrow));
+                   float fireTime = cnt * 0.2f;
+
+                   // 여기서 제대로 초기화를 해야 재사용된 거처럼 보인다.
+                   recyclingArrows = CreateArrow(offsetX, offsetY, fireTime);
+                   activeArrows->push_back(std::move(recyclingArrows));
                 }
             }
             else
             {
                 if (not inactivateArrows->empty())
                 {
-                    recyclingArrow = std::move(inactivateArrows->back());
+                    recyclingArrows = std::move(inactivateArrows->back());
                     inactivateArrows->pop_back();
                 }
+                else
+                {
+                    recyclingArrows = {};
+                }
 
-                recyclingArrow = CreateArrow(dirX, 0.0f);
-                activeArrows->push_back(std::move(recyclingArrow));
+                recyclingArrows = CreateArrow(0.001f, 0.001f, 0.001f);
+                activeArrows->push_back(std::move(recyclingArrows));
             }
 
             gArrowFired = false; // 한 번만 그려지도록
@@ -580,41 +602,66 @@ void UpdateArrows(OBJECT_STATE objectState, std::vector<Arrow>* inactivateArrows
     // 화살 이동 업데이트
     for (auto arrowIter = activeArrows->begin(); arrowIter != activeArrows->end();)
     {
-        Arrow& currentArrow = *arrowIter;
+        Arrow& currentArrows = *arrowIter;
+        
+        currentArrows.elapsedTime += gDeltaTime;
 
-        if (currentArrow.isActive)
+        if (currentArrows.elapsedTime >= currentArrows.fireTime)
         {
-            currentArrow.pos.x += currentArrow.dirPos.x * currentArrow.speed * gDeltaTime;
-            currentArrow.elapsedTime += gDeltaTime;
-
-            if (currentArrow.elapsedTime >= 2.0f)
-            {
-                currentArrow.isActive = false;
-                currentArrow.elapsedTime = 0.0f;
-
-                inactivateArrows->push_back(std::move(currentArrow));
-                arrowIter = activeArrows->erase(arrowIter);   // 지우면 다음 번째를 가리키게 된다.
-                continue;
-            }
+            currentArrows.pos.x += currentArrows.dirPos.x * currentArrows.speed * gDeltaTime;
         }
 
-        ++arrowIter;
+        if (currentArrows.elapsedTime >= (currentArrows.fireTime + 2.0f))
+        {
+            currentArrows.elapsedTime = 0.0f;
+
+            inactivateArrows->push_back(std::move(currentArrows));
+            arrowIter = activeArrows->erase(arrowIter);   // 지우면 다음 번째를 가리키게 된다.
+        }
+        else
+        {
+            ++arrowIter;
+        }
     }
 }
 
-Arrow CreateArrow(float dirX, float offsetY)
+Arrow CreateArrow(float offsetX, float offsetY, float fireTime)
 {
+    float dirX = (gPlayerInformation.currDir == DIR_TYPE::LEFT) ? -1.0f : 1.0f;
+
     return 
-    {
-        .pos = {.x = gPlayerInformation.pos.x + 100.f, .y = (gPlayerInformation.pos.y + 90.0f) + offsetY },
+    {   .type = OBJECT_TYPE::ARROW,
+        .pos = {.x = (gPlayerInformation.pos.x + 100.f) + offsetX, .y = (gPlayerInformation.pos.y + 90.0f) + offsetY },
         .scale = {.x = 2.0f, .y = 2.0f },
         .speed = 200.0f,
         .dirPos = {.x = dirX, .y = 0.0f },
         .curDir = gPlayerInformation.currDir,
         .elapsedTime = 0.0f,
-        .isActive = true
+        .fireTime = fireTime
     };
+}
 
+void CheckCollisionType(OBJECT_TYPE typeA, OBJECT_TYPE typeB, const std::unordered_map<OBJECT_TYPE, std::vector<Collider>>& colliderGroups)
+{
+    gIsCollider = false;
+
+    const auto& groupA = colliderGroups.at(typeA);
+    const auto& groupB = colliderGroups.at(typeB);
+
+     for (const auto& colliderA : groupA)
+    {
+        for (const auto& colliderB : groupB)
+        {
+            if (abs(colliderA.finalPos.x - colliderB.finalPos.x) <= (colliderA.scale.x + colliderB.scale.x) / 2.f &&
+                abs(colliderA.finalPos.y - colliderB.finalPos.y) <= (colliderA.scale.y + colliderB.scale.y) / 2.f)
+            {
+                gIsCollider = true;
+                break;
+            }
+        }
+    }
+
+    std::cout << gIsCollider << std::endl;
 }
 
 void DrawAnimation(const Animation& animation, const vPoint pos, const vPoint scale)
@@ -687,6 +734,16 @@ void Initialize()
         .isDead = false
     };
 
+    Collider playerCollider =
+    {
+        .offsetPos = {.x = 120.0f, .y = 120.0f },
+        .finalPos = {},
+        .scale = {.x = 45.0f, .y = 45.0f },
+        .id = 0,
+    };
+
+    gMapColliders[OBJECT_TYPE::PLAYER].push_back(playerCollider);
+
     // 몬스터 초기화
     for (int32_t i = 0; i < MONSTER_COUNT; ++i)
     {
@@ -701,6 +758,16 @@ void Initialize()
             .isAttacking = false,
             .isDead = false
         };
+
+        Collider monsterCollider =
+        {
+            .offsetPos = {.x = 130.0f, .y = 125.0f },
+            .finalPos = {},
+            .scale = {.x = 50.0f, .y = 50.0f },
+            .id = i,
+        };
+
+        gMapColliders[OBJECT_TYPE::MONSTER].push_back(monsterCollider);
     }
 }
 
@@ -738,10 +805,30 @@ void Update()
     }
 
     // 플레이어 키 업데이트
-    if (gVecKeyInfo[(int32_t)KEY::LBUTTON].eState == KEY_STATE::TAP and not gPlayerInformation.isAttacking)
+    if (gVecKeyInfo[(int32_t)KEY::T].eState == KEY_STATE::TAP)
+    {
+        gIsPen = not gIsPen;
+    }
+
+    if (gVecKeyInfo[(int32_t)KEY::LBUTTON].eState == KEY_STATE::TAP and (not gPlayerInformation.isAttacking))
     {
         gPlayerInformation.currState = OBJECT_STATE::ATTACK;
         ResetAnimation(&gPlayerAnimations[(int32_t)gPlayerInformation.currState][(int32_t)gPlayerInformation.currDir]);
+
+        // TODO: 초기화할 때 같이 push_back 하는 게 나은가? - 한다면, 아이디로 구분하기
+        for (Collider& collider : gMapColliders[OBJECT_TYPE::PLAYER])
+        {
+            if (gPlayerInformation.currDir == DIR_TYPE::LEFT)
+            {
+                collider.offsetPos = { 105.0f, 120.0f };
+                collider.scale = { 65.0f, 60.0f };
+            }
+            else
+            {
+                collider.offsetPos = { 145.0f, 120.0f };
+                collider.scale = { 65.0f, 60.0f };
+            }
+        }
 
         gPlayerInformation.isAttacking = true;
     }
@@ -778,6 +865,15 @@ void Update()
         ResetAnimation(&gPlayerAnimations[(int32_t)gPlayerInformation.currState][(int32_t)gPlayerInformation.currDir]);
 
         gArrowFired = true;
+    }
+
+    if (gVecKeyInfo[(int32_t)KEY::LBUTTON].eState == KEY_STATE::NONE and (not gPlayerInformation.isAttacking))
+    {
+        for (int32_t i = 0; i < gMapColliders[OBJECT_TYPE::PLAYER].size(); ++i)
+        {
+           gMapColliders[OBJECT_TYPE::PLAYER][i].offsetPos = { .x = 120.0f, .y = 120.0f };
+           gMapColliders[OBJECT_TYPE::PLAYER][i].scale = { .x = 45.0f, .y = 45.0f };
+        }
     }
 
     int32_t moveDirX = int32_t(gVecKeyInfo[(int32_t)KEY::D].eState == KEY_STATE::HOLD) - int32_t(gVecKeyInfo[(int32_t)KEY::A].eState == KEY_STATE::HOLD);
@@ -826,9 +922,8 @@ void Update()
     UpdateArrows(OBJECT_STATE::SPACESKILL, &gInactivateSpaceSkill, &gActivateSpaceSkill, false);
     UpdateArrows(OBJECT_STATE::ESKILL, &gInactivateESkill, &gActivateESkill, true);
 
-
-    std::cout << "Active: " << gActivateESkill.size() << std::endl;
-    std::cout << "Inactivate: " << gInactivateESkill.size() << std::endl;
+    //std::cout << "Active: " << gActivateESkill.size() << std::endl;
+    //std::cout << "Inactivate: " << gInactivateESkill.size() << std::endl;
 
     // 몬스터 업데이트
     constexpr float TRACKING_RANGE_SQRTF = 120.0f * 120.0f;
@@ -847,7 +942,7 @@ void Update()
             monster.currState = OBJECT_STATE::IDLE;
             monster.isAttacking = false;
             continue;
-        }
+        } 
         else
         {
             monster.currDir = (dx < 0) ? DIR_TYPE::LEFT : DIR_TYPE::RIGHT;
@@ -900,18 +995,32 @@ void Update()
             UpdateAnimation(&gMonsterAnimations[state][dir]);
         }
     }
+
+    // 충돌 업데이트
+    CheckCollisionType(OBJECT_TYPE::PLAYER, OBJECT_TYPE::MONSTER, gMapColliders);
+}
+
+void FinalUpdate()
+{
+    // 충돌 좌표 갱신
+    Collider& playerCollider = gMapColliders[OBJECT_TYPE::PLAYER][0];
+    playerCollider.finalPos.x = gPlayerInformation.pos.x + playerCollider.offsetPos.x;
+    playerCollider.finalPos.y = gPlayerInformation.pos.y + playerCollider.offsetPos.y;
+
+    for (size_t i = 0; i < gMonstersInformation.size(); ++i)
+    {
+        gMapColliders[OBJECT_TYPE::MONSTER][i].finalPos.x = gMonstersInformation[i].pos.x + gMapColliders[OBJECT_TYPE::MONSTER][i].offsetPos.x;
+        gMapColliders[OBJECT_TYPE::MONSTER][i].finalPos.y = gMonstersInformation[i].pos.y + gMapColliders[OBJECT_TYPE::MONSTER][i].offsetPos.y;
+    }
 }
 
 void Draw()
 {  
     // 배경
-    HBRUSH hBrush = CreateSolidBrush(RGB(30, 30, 30));
-    HBRUSH hOldBrush = (HBRUSH)SelectObject(gMemDC, hBrush);
+    gBackGroundBrush = CreateSolidBrush(RGB(30, 30, 30));
+    gBackGroundOldBrush = (HBRUSH)SelectObject(gMemDC, gBackGroundBrush);
 
     Rectangle(gMemDC, -1, -1, VIEWSIZE_X + 1, VIEWSIZE_Y + 1);
-
-    SelectObject(gMemDC, hOldBrush);
-    DeleteObject(hBrush);
 
     // 플레이어 그리기
     DrawAnimation(gPlayerAnimations[(int32_t)gPlayerInformation.currState][(int32_t)gPlayerInformation.currDir], gPlayerInformation.pos, gPlayerInformation.scale);
@@ -921,28 +1030,65 @@ void Draw()
     {
         DrawAnimation(gMonsterAnimations[(int32_t)monster.currState][(int32_t)monster.currDir], monster.pos, monster.scale);
     }
-
-    // 화살 그리기 SpaceSkill
-    for (Arrow& arrow : gActivateSpaceSkill)
+    
+    for (Arrow& arrows : gActivateSpaceSkill)
     {
-        if (arrow.isActive)
-        {
-            DrawTexture(*gArrowTextures[(int32_t)arrow.curDir], arrow.pos, arrow.scale);
-        }
+        DrawTexture(*gArrowTextures[(int32_t)arrows.curDir], arrows.pos, arrows.scale);
     }
 
-    // 화살 그리기 ESkill
-    for (Arrow& arrow : gActivateESkill)
+    for (Arrow& arrows : gActivateESkill)
     {
-        if (arrow.isActive)
+        DrawTexture(*gArrowTextures[(int32_t)arrows.curDir], arrows.pos, arrows.scale);
+    }
+
+    // 충돌박스 그리기
+    if (gIsPen)
+    {
+        if (not gIsCollider)
         {
-            DrawTexture(*gArrowTextures[(int32_t)arrow.curDir], arrow.pos, arrow.scale);
+            gColloderPenColor = (HPEN)SelectObject(gMemDC, CreatePen(PS_SOLID, 1, RGB(255, 0, 0)));
         }
+        else
+        {
+            gColloderPenColor = (HPEN)SelectObject(gMemDC, CreatePen(PS_SOLID, 1, RGB(255, 255, 0)));
+        }
+
+        gColliderhollowBrush = (HBRUSH)GetStockObject(HOLLOW_BRUSH);
+        gColloderOldBrush = (HBRUSH)SelectObject(gMemDC, gColliderhollowBrush);
+
+        const Collider& playerCollider = gMapColliders[OBJECT_TYPE::PLAYER][0];
+
+        Rectangle(gMemDC, int(playerCollider.finalPos.x - playerCollider.scale.x / 2.0f), int(playerCollider.finalPos.y - playerCollider.scale.y / 2.0f),
+            int(playerCollider.finalPos.x + playerCollider.scale.x / 2.0f), int(playerCollider.finalPos.y + playerCollider.scale.y / 2.0f));
+
+        for (Collider& monsterCollider : gMapColliders[OBJECT_TYPE::MONSTER])
+        {
+            Rectangle(gMemDC, int(monsterCollider.finalPos.x - monsterCollider.scale.x / 2.0f), int(monsterCollider.finalPos.y - monsterCollider.scale.y / 2.0f),
+                int(monsterCollider.finalPos.x + monsterCollider.scale.x / 2.0f), int(monsterCollider.finalPos.y + monsterCollider.scale.y / 2.0f));
+        }
+    }
+    else
+    {
+        return;
     }
 }
 
 void Finalize()
-{    
+{   
+    // 선택
+    SelectObject(gMemDC, gBackGroundOldBrush);
+    SelectObject(gMemDC, gOldBit);
+    SelectObject(gMemDC, gColloderPenColor);
+    SelectObject(gMemDC, gColloderOldBrush);
+
+    // 해제
+    ReleaseDC(gHWnd, gHDC);
+    DeleteDC(gMemDC);
+    DeleteObject(gBackGroundBrush);
+    DeleteObject(gBitmap);
+    DeleteObject(gColloderPenColor);
+    DeleteObject(gColliderhollowBrush);
+
     // 리소스 해제
     for (auto& iter : gMapTextures)
     {
