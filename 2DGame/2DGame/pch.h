@@ -3,7 +3,9 @@
 #include "resource.h"
 
 #define WIN32_LEAN_AND_MEAN   
+#define NOMINMAX
 #include <windows.h>
+#include <algorithm>
 #include <stdlib.h>
 #include <malloc.h>
 #include <memory.h>
