@@ -22,4 +22,5 @@
 #include <cassert>
 #include <random>
 #include <array>
+#include <functional>
 // ==========================================
