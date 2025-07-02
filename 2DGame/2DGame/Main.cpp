@@ -87,10 +87,9 @@ enum class COLLISION_TYPE
 {
     NONE,
     PLAYER,
-    PLAYER_SWORD,
-    PLAYER_ARROW,
+    PLAYER_ATTACK,
     MONSTER,
-    MONSTER_SWORD,
+    MONSTER_ATTACK,
     GROUND,
     END
 };
@@ -123,6 +122,9 @@ struct Collider
     vPoint offsetPos;
     vPoint finalPos;
     vPoint scale;
+
+    COLLISION_TYPE collidedType;
+    bool isActive;
 };
 
 struct Object
@@ -224,12 +226,14 @@ static Arrow SpawnArrow(float offsetY, float fireTime);
 
 static void DrawColliderBox(HDC dc, const Collider& collider, COLLISION_TYPE originalType);
 static bool IsColliding(const Collider& objectA, const Collider& objectB);
-static void UpdateCollisionsState(Collider* PrevCollider, bool isColliding, COLLISION_TYPE originalType, COLLISION_TYPE collideredOtherType);
-static void ProcessCollision(Collider& colliderA, Collider& colliderB, COLLISION_TYPE typeA, COLLISION_TYPE typeB, bool isColliding,
+static void UpdateCollisionsState(bool isColliding, Collider* victimCollider, COLLISION_TYPE originalType, COLLISION_TYPE attackType);
+static void ProcessCollision(bool isColliding, Collider& victim, COLLISION_TYPE victimType, COLLISION_TYPE attackerType,
                                  std::function<void()> onEnter = nullptr, std::function<void()> onStay = nullptr,
                                  std::function<void()> onExit = nullptr, std::function<void()> None = nullptr);
 
 static void PrintText(HDC dc, int startX, int startY, const std::string& printStr, int fontSize, COLORREF fontColor);
+
+static void DamagePos(vPoint vPos, vPoint vPushVelocity);
 
 static void Initialize();
 static void Update();
@@ -714,17 +718,19 @@ Arrow SpawnArrow(float offsetY, float fireTime)
 
         .collider =
         {
-            .type = COLLISION_TYPE::PLAYER_ARROW,
+            .type = COLLISION_TYPE::PLAYER_ATTACK,
             .state = COLLISION_STATE::NONE,
             .offsetPos = {.x = 30.0f, .y = 35.0f },
             .scale = {.x = 27.0f, .y = 27.0f },
+            .collidedType = COLLISION_TYPE::PLAYER_ATTACK,
+            .isActive = false,
         },
     };
 }
 
 void DrawColliderBox(HDC dc, const Collider& collider, COLLISION_TYPE originalType)
 {
-    COLORREF color = (collider.type != originalType) ? RGB(255, 255, 0) : RGB(255, 0, 0);
+    COLORREF color = (collider.collidedType != originalType) ? RGB(255, 255, 0) : RGB(255, 0, 0);
 
     HPEN pen = CreatePen(PS_SOLID, 1, color);
     HPEN oldPen = (HPEN)SelectObject(dc, pen);
@@ -741,10 +747,11 @@ void DrawColliderBox(HDC dc, const Collider& collider, COLLISION_TYPE originalTy
 
 bool IsColliding(const Collider& colliderA, const Collider& colliderB)
 {
-    if (colliderA.type == colliderB.type)
+    if (!colliderB.isActive)
     {
         return false;
     }
+
 
     return 
         ( colliderA.finalPos.x < (colliderB.finalPos.x + colliderB.scale.x)
@@ -753,43 +760,42 @@ bool IsColliding(const Collider& colliderA, const Collider& colliderB)
         && colliderB.finalPos.y < (colliderA.finalPos.y + colliderA.scale.y) );
 }
 
-void UpdateCollisionsState(Collider* collider, bool isColliding, COLLISION_TYPE originalType, COLLISION_TYPE collideredOtherType)
+void UpdateCollisionsState(bool isColliding, Collider* victimCollider, COLLISION_TYPE originalType, COLLISION_TYPE attackType)
 {
     if (isColliding)
     {
-        if (collider->state == COLLISION_STATE::NONE or collider->state == COLLISION_STATE::EXIT)
+        if (victimCollider->state == COLLISION_STATE::NONE or victimCollider->state == COLLISION_STATE::EXIT)
         {
-            collider->state = COLLISION_STATE::ENTER;
-            collider->type = collideredOtherType;
+            victimCollider->state = COLLISION_STATE::ENTER;
         }
         else
         {
-            collider->state = COLLISION_STATE::STAY;
-            collider->type = collideredOtherType;
+            victimCollider->state = COLLISION_STATE::STAY;
         }
+
+        victimCollider->collidedType = attackType;
     }
     else
     {
-        if (collider->state == COLLISION_STATE::ENTER or collider->state == COLLISION_STATE::STAY)
+        if (victimCollider->state == COLLISION_STATE::ENTER or victimCollider->state == COLLISION_STATE::STAY)
         {
-            collider->state = COLLISION_STATE::EXIT;
-            collider->type = originalType;
+            victimCollider->state = COLLISION_STATE::EXIT;
         }
         else
         {
-            collider->state = COLLISION_STATE::NONE;
-            collider->type = originalType;
+            victimCollider->state = COLLISION_STATE::NONE;
         }
+
+        victimCollider->collidedType = originalType;
     }
 }
 
-void ProcessCollision(Collider& colliderA, Collider& colliderB, COLLISION_TYPE typeA, COLLISION_TYPE typeB, bool isColliding, 
+void ProcessCollision(bool isColliding, Collider& victimCollider, COLLISION_TYPE victimType, COLLISION_TYPE attackerType,
     std::function<void()> Enter, std::function<void()> Stay, std::function<void()> Exit, std::function<void()> None)
 {
-    UpdateCollisionsState(&colliderA, isColliding, typeA, typeB);
-    UpdateCollisionsState(&colliderB, isColliding, typeB, typeA);
+    UpdateCollisionsState(isColliding, &victimCollider, victimType, attackerType);
     
-    switch(colliderB.state)
+    switch(victimCollider.state)
     {
         case COLLISION_STATE::ENTER: 
         {
@@ -833,6 +839,37 @@ void PrintText(HDC dc, int startX, int startY, const std::string& printStr, int 
     DeleteObject(hFont);
     SetTextColor(dc, oldFontColor);
     SetBkMode(dc, oldBackGroundColor);
+}
+
+void DamagePos(vPoint vPos, vPoint vPushVelocity)
+{
+    constexpr float drag = 500.0f;
+
+    vPoint& velocity = vPushVelocity;
+    vPoint& pos = vPos;
+
+    // 위치 갱신
+    vPos.x += velocity.x * gDeltaTime;
+    vPos.y += velocity.y * gDeltaTime;
+
+    // 감속
+    if (velocity.x > 0.001f)
+    {
+        velocity.x = std::max(0.001f, velocity.x - drag * gDeltaTime);
+    }
+    else
+    {
+        velocity.x = std::min(0.001f, velocity.x + drag * gDeltaTime);
+    }
+
+    if (velocity.y > 0.001f)
+    {
+        velocity.y = std::max(0.001f, velocity.y - drag * gDeltaTime);
+    }
+    else
+    {
+        velocity.y = std::min(0.001f, velocity.y + drag * gDeltaTime);
+    }
 }
 
 void DrawAnimation(const Animation& animation, const vPoint pos, const vPoint scale)
@@ -912,21 +949,25 @@ void Initialize()
         .isAttacking = false,
         .isDamaging = false,
 
-        .bodyCollider = 
+        .bodyCollider =
         {
-            .type = COLLISION_TYPE::NONE,
+            .type = COLLISION_TYPE::PLAYER,
             .state = COLLISION_STATE::NONE,
             .offsetPos = {.x = 122.0f, .y = 120.0f },
             .finalPos = {},
             .scale = {.x = 40.0f, .y = 40.0f },
+            .collidedType = COLLISION_TYPE::PLAYER,
+            .isActive = false,
         },
         .attackCollider = 
         {
-            .type = COLLISION_TYPE::NONE,
+            .type = COLLISION_TYPE::PLAYER_ATTACK,
             .state = COLLISION_STATE::NONE,
             .offsetPos = {.x = 140.0f, .y = 120.0f },
             .finalPos = {},
             .scale = {.x = 65.0f, .y = 60.0f },
+            .collidedType = COLLISION_TYPE::PLAYER_ATTACK,
+            .isActive = false,
         }
     };
 
@@ -953,20 +994,24 @@ void Initialize()
 
             .bodyCollider = // 오른쪽
             {
-                .type = COLLISION_TYPE::NONE,
+                .type = COLLISION_TYPE::MONSTER,
                 .state = COLLISION_STATE::NONE,
                 .offsetPos = {.x = 125.0f, .y = 125.0f },
                 .finalPos = {},
                 .scale = {.x = 45.0f, .y = 45.0f },
+                .collidedType = COLLISION_TYPE::MONSTER,
+                .isActive = false,
             },
 
             .attackCollider =
             {
-                .type = COLLISION_TYPE::NONE,
+                .type = COLLISION_TYPE::MONSTER_ATTACK,
                 .state = COLLISION_STATE::NONE,
                 .offsetPos = {.x = 140.0f, .y = 125.0f },
                 .finalPos = {},
-                .scale = {.x = 60.0f, .y = 50.0f }
+                .scale = {.x = 60.0f, .y = 50.0f },
+                .collidedType = COLLISION_TYPE::MONSTER_ATTACK,
+                .isActive = false,
             } 
         };
 
@@ -1045,6 +1090,8 @@ void Update()
         }
 
         gPlayerInformation.isAttacking = true;
+
+        gPlayerInformation.attackCollider.isActive = true;
     }
 
     if (gVecKeyInfo[(int32_t)KEY::SPACE].eState == KEY_STATE::TAP and (not gPlayerInformation.isAttacking) and (not gPlayerInformation.isDamaging))
@@ -1115,6 +1162,7 @@ void Update()
                 {
                     playerObject.state = OBJECT_STATE::IDLE;
                     gPlayerInformation.isAttacking = false;
+                    gPlayerInformation.attackCollider.isActive = false;
                 }
             }
         }
@@ -1125,25 +1173,31 @@ void Update()
     UpdateArrows(OBJECT_STATE::SPACESKILL, &gInactivateSpaceSkill, &gActivateSpaceSkill, false);
     UpdateArrows(OBJECT_STATE::ESKILL, &gInactivateESkill, &gActivateESkill, true);
     
+
     {   // 플레이어 상태 업데이트
         if (gPlayerInformation.isDamaging)
         {
-            if (gPlayerInformation.bodyCollider.type == COLLISION_TYPE::MONSTER_SWORD)
+            if (gPlayerInformation.bodyCollider.collidedType == COLLISION_TYPE::MONSTER_ATTACK)
             {
                 playerObject.state = OBJECT_STATE::DAMAGE;
-                ResetAnimation(&gPlayerAnimations[(int32_t)playerObject.state][(int32_t)playerObject.dir]);
+
+                // 애니메이션 초기화는 끝 프레임에 도달했을 때로
+                Animation& anim = gPlayerAnimations[(int32_t)playerObject.state][(int32_t)playerObject.dir];
+                if (anim.currentFrame == anim.frameCount - 1
+                    and anim.elapsedTime >= anim.frameIntervalTime - 0.05f)
+                {
+                    ResetAnimation(&gPlayerAnimations[(int32_t)playerObject.state][(int32_t)playerObject.dir]);
+                }
             }
-
-            printf("%d", gPlayerInformation.bodyCollider.type);
         }
-
     }
     
     {   // Damage 좌표 업데이트
+        //DamagePos(playerObject.pos, gPlayerInformation.pushVelocity);
         constexpr float drag = 500.0f;
 
         vPoint& velocity = gPlayerInformation.pushVelocity;
-        vPoint& pos = playerObject.pos;
+        vPoint& pos = gPlayerInformation.object.pos;
 
         // 위치 갱신
         pos.x += velocity.x * gDeltaTime;
@@ -1185,6 +1239,7 @@ void Update()
         if (monster.object.state == OBJECT_STATE::ATTACK)
         {
             monster.isAttacking = true;
+            monster.attackCollider.isActive = true;
 
             Animation& animation = gMonsterAnimations[(int32_t)monster.object.state][(int32_t)monster.object.dir];
             if (animation.currentFrame == animation.frameCount - 1
@@ -1192,6 +1247,7 @@ void Update()
             {
                 monster.object.state = OBJECT_STATE::IDLE;
                 monster.isAttacking = false;
+                monster.attackCollider.isActive = false;
             }
 
             break;
@@ -1223,41 +1279,91 @@ void Update()
 
             monster.object.pos.x += dir.x * monster.object.speed * gDeltaTime;
             monster.object.pos.y += dir.y * monster.object.speed * gDeltaTime;
-            monster.object.state = OBJECT_STATE::WALK;
+
+            if (not monster.isDamaging)
+            {
+                monster.object.state = OBJECT_STATE::WALK;
+            }
         }
         // 공격 상태로 전환합니다.
         else
         {
             if (monster.object.state != OBJECT_STATE::ATTACK)
             {
-                monster.object.state = OBJECT_STATE::ATTACK;
-                ResetAnimation(&gMonsterAnimations[(int32_t)monster.object.state][(int32_t)monster.object.dir]);
+                if (not monster.isDamaging)
+                {
+                    monster.object.state = OBJECT_STATE::ATTACK;
+                    ResetAnimation(&gMonsterAnimations[(int32_t)monster.object.state][(int32_t)monster.object.dir]);
 
-                if (monster.object.dir == DIR_TYPE::LEFT)
-                {
-                    monster.attackCollider.offsetPos = { .x = 100.0f, .y = 125.0f };
-                    monster.attackCollider.scale = { .x = 60.0f, .y = 50.0f };
-                }
-                else
-                {
-                    monster.attackCollider.offsetPos = { .x = 140.0f, .y = 125.0f };
-                    monster.attackCollider.scale = { .x = 60.0f, .y = 50.0f };
+                    if (monster.object.dir == DIR_TYPE::LEFT)
+                    {
+                        monster.attackCollider.offsetPos = { .x = 100.0f, .y = 125.0f };
+                        monster.attackCollider.scale = { .x = 60.0f, .y = 50.0f };
+                    }
+                    else
+                    {
+                        monster.attackCollider.offsetPos = { .x = 140.0f, .y = 125.0f };
+                        monster.attackCollider.scale = { .x = 60.0f, .y = 50.0f };
+                    }
                 }
             }
         }
 
-        // TODO: 애니메이션이 너무 짧게 보인다.
-        if (monster.isDamaging)
-        {
-            for (int32_t dir = 0; dir < (int32_t)DIR_TYPE::END; ++dir)
+        {   // Damage 좌표 업데이트
+            //DamagePos(monster.object.pos, monster.pushVelocity);
+            constexpr float drag = 500.0f;
+
+            vPoint& velocity = monster.pushVelocity;
+            vPoint& pos = monster.object.pos;
+
+            // 위치 갱신
+            pos.x += velocity.x * gDeltaTime;
+            pos.y += velocity.y * gDeltaTime;
+
+            // 감속
+            if (velocity.x > 0.001f)
             {
-                if (monster.bodyCollider.type != COLLISION_TYPE::MONSTER)
+                velocity.x = std::max(0.001f, velocity.x - drag * gDeltaTime);
+            }
+            else
+            {
+                velocity.x = std::min(0.001f, velocity.x + drag * gDeltaTime);
+            }
+
+            if (velocity.y > 0.001f)
+            {
+                velocity.y = std::max(0.001f, velocity.y - drag * gDeltaTime);
+            }
+            else
+            {
+                velocity.y = std::min(0.001f, velocity.y + drag * gDeltaTime);
+            }
+
+            if (monster.hp <= 0)
+            {
+                monster.object.isDead = true;
+                monster.object.state = OBJECT_STATE::DEAD;
+            }
+        }
+
+        {   // 몬스터 상태 업데이트
+            //if (monster.isDamaging)
+            {
+                if (monster.bodyCollider.collidedType == COLLISION_TYPE::PLAYER_ATTACK)         
                 {
                     monster.object.state = OBJECT_STATE::DAMAGE;
-                    //ResetAnimation(&gMonsterAnimations[(int32_t)monster.object.state][(int32_t)monster.object.dir]);
+
+                    Animation& anim = gMonsterAnimations[(int32_t)monster.object.state][(int32_t)monster.object.dir];
+                    if (anim.currentFrame == anim.frameCount - 1
+                        and anim.elapsedTime >= anim.frameIntervalTime - 0.05f)
+                    {
+                        ResetAnimation(&gMonsterAnimations[(int32_t)monster.object.state][(int32_t)monster.object.dir]);
+                    }
                 }
             }
         }
+         
+        //printf("%d \n", monster.bodyCollider.collidedType);
     }
 
     // 애니메이션 업데이트
@@ -1321,6 +1427,9 @@ void FinalUpdate()
 
 void UpdateColliders()
 {
+    // 피해자만 작성한다.
+
+    // 플레이어 체 - 몬스터 공격
     for (Monster& monsterInfo : gMonstersInformation)
     {
         Collider& playerCollider = gPlayerInformation.bodyCollider;
@@ -1332,8 +1441,7 @@ void UpdateColliders()
             playerToMonsterAttack = IsColliding(playerCollider, monsterAttackCollider);
         }
         
-        // 플레이어 몸체 - 몬스터의 칼
-        ProcessCollision(playerCollider, monsterAttackCollider, COLLISION_TYPE::PLAYER, COLLISION_TYPE::MONSTER_SWORD, playerToMonsterAttack,
+        ProcessCollision(playerToMonsterAttack, playerCollider, COLLISION_TYPE::PLAYER, COLLISION_TYPE::MONSTER_ATTACK,
             [&]() 
             {
                 gPlayerInformation.hp -= monsterInfo.attack;
@@ -1366,64 +1474,71 @@ void UpdateColliders()
             },
             [&]()
             {
+                gPlayerInformation.isDamaging = false;
+            },
+            [&]()
+            {
+                gPlayerInformation.isDamaging = false;
+            }
+        );
+    }
+
+    // 몬스터 몸체 - 플레이어 공격
+    for (Monster& monsterInfo : gMonstersInformation)
+    {
+        Collider& monsterCollider = monsterInfo.bodyCollider;
+        Collider& playerAttackCollider = gPlayerInformation.attackCollider;
+
+        bool monsterToPlayerAttack = false;
+
+        if (not monsterInfo.object.isDead)
+        {
+            monsterToPlayerAttack = IsColliding(monsterCollider, playerAttackCollider);
+        }
+
+        ProcessCollision(monsterToPlayerAttack, monsterCollider, COLLISION_TYPE::MONSTER, COLLISION_TYPE::PLAYER_ATTACK,
+            [&]()
+            {
+                monsterInfo.hp -= gPlayerInformation.attack;
+            },
+            [&]()
+            {
+                Animation& anim = gPlayerAnimations[(int32_t)OBJECT_STATE::ATTACK][(int32_t)gPlayerInformation.object.dir];
+                if (anim.currentFrame == 4)
+                {   
+                    float pushDirX = monsterCollider.finalPos.x - playerAttackCollider.finalPos.x;
+                    float pushDirY = monsterCollider.finalPos.y - playerAttackCollider.finalPos.y;
+
+                    // 정규화
+                    float pushSqrtf = pushDirX * pushDirX + pushDirY * pushDirY;
+                    float len = std::sqrt(pushSqrtf);
+
+                    if (len != 0.0f)
+                    {
+                        pushDirX /= len;
+                        pushDirY /= len;
+                    }
+
+                    // 밀리도록 하기
+                    float power = 100.0f;
+                    monsterInfo.pushVelocity.x += pushDirX * power;
+                    monsterInfo.pushVelocity.y += pushDirY * power;
+
+                    monsterInfo.isDamaging = true;
+                }
+            },
+            [&]()
+            {
+                monsterInfo.isDamaging = false;
+            },
+            [&]()
+            {
                 monsterInfo.isDamaging = false;
             }
         );
     }
 
-    for (Monster& monsterInfo : gMonstersInformation)
-    {
-        Collider& playerAttackCollider = gPlayerInformation.attackCollider;
-        Collider& monsterCollider = monsterInfo.bodyCollider;
-
-        bool playerAttackToMonster = false;
-
-        if (not gPlayerInformation.object.isDead)
-        {
-            playerAttackToMonster = IsColliding(playerAttackCollider, monsterCollider);
-        }
-
-        // 플레이어 칼 - 몬스터 몸체
-        if (gPlayerInformation.isAttacking)
-        {
-            ProcessCollision(playerAttackCollider, monsterCollider, COLLISION_TYPE::PLAYER_SWORD, COLLISION_TYPE::MONSTER, playerAttackToMonster,
-                [&]()
-                {
-                    monsterInfo.hp -= gPlayerInformation.attack;
-                },
-                [&]()
-                {
-                    // 밀리도록 하기
-                    Animation& anim = gMonsterAnimations[(int32_t)OBJECT_STATE::ATTACK][(int32_t)monsterInfo.object.dir];
-                    if (anim.currentFrame == 4)
-                    {
-                        float pushDirX = monsterCollider.finalPos.x - playerAttackCollider.finalPos.x;
-                        float pushDirY = monsterCollider.finalPos.y - playerAttackCollider.finalPos.y;
-
-                        // 정규화
-                        float pushSqrtf = pushDirX * pushDirX + pushDirY * pushDirY;
-                        float len = std::sqrt(pushSqrtf);
-
-                        if (len != 0.0f)
-                        {
-                            pushDirX /= len;
-                            pushDirY /= len;
-                        }
-
-                        float power = 60.0f;
-                        monsterInfo.pushVelocity.x += pushDirX * power;
-                        monsterInfo.pushVelocity.y += pushDirY * power;
-
-                        monsterInfo.isDamaging = true;
-                    }
-                },
-                [&]()
-                {
-                    monsterInfo.isDamaging = false;
-                }
-            );
-        }
-    }
+    // TODO: 몬스터 몸통 - 플레이어 활
 }
 
 void Draw()
@@ -1469,51 +1584,43 @@ void Draw()
     // 충돌박스 그리기
     if (gIsPen)
     {
-        // 플레이어
-        if (not gPlayerInformation.isAttacking)
-        {
-            Collider& bodyCollider = gPlayerInformation.bodyCollider;
-            DrawColliderBox(gMemDC, bodyCollider, COLLISION_TYPE::PLAYER);
-        }
-        else
-        {
-            const Animation& anim = gPlayerAnimations[(int32_t)OBJECT_STATE::ATTACK][(int32_t)gPlayerInformation.object.dir];
-            if (anim.currentFrame == 4)
-            {
-                Collider& attackCollider = gPlayerInformation.attackCollider;
-                DrawColliderBox(gMemDC, attackCollider, COLLISION_TYPE::PLAYER_SWORD);
+        // 플레이어 몸통
+       Collider& bodyCollider = gPlayerInformation.bodyCollider;
+       DrawColliderBox(gMemDC, bodyCollider, COLLISION_TYPE::PLAYER);
 
-            }
-        }
+       // 플레이어 칼
+       Collider& attackCollider = gPlayerInformation.attackCollider;
+       DrawColliderBox(gMemDC, attackCollider, COLLISION_TYPE::PLAYER_ATTACK);
+
 
         // 화살 충돌 박스
         for (Arrow& spaceSkill : gActivateSpaceSkill)
         {
             Collider& spaceSkillArrowCollider = spaceSkill.collider;
-            DrawColliderBox(gMemDC, spaceSkillArrowCollider, COLLISION_TYPE::PLAYER_ARROW);
+            DrawColliderBox(gMemDC, spaceSkillArrowCollider, COLLISION_TYPE::PLAYER_ATTACK);
         }
 
         for (Arrow& eSkill : gActivateESkill)
         {
             Collider& eSkillArrowCollider = eSkill.collider;
-            DrawColliderBox(gMemDC, eSkillArrowCollider, COLLISION_TYPE::PLAYER_ARROW);
+            DrawColliderBox(gMemDC, eSkillArrowCollider, COLLISION_TYPE::PLAYER_ATTACK);
         }
 
         // 몬스터 충돌박스
         for (Monster& monster : gMonstersInformation)
         {   
-            if (not monster.isAttacking)
+            //if (not monster.isAttacking)
             {
-                Collider& collider = monster.bodyCollider;
-                DrawColliderBox(gMemDC, collider, COLLISION_TYPE::MONSTER);
+                Collider& bodyCollider = monster.bodyCollider;
+                DrawColliderBox(gMemDC, bodyCollider, COLLISION_TYPE::MONSTER);
             }
-            else
+            //else
             {
-                const Animation& anim = gMonsterAnimations[(int32_t)OBJECT_STATE::ATTACK][(int32_t)monster.object.dir];
-                if (anim.currentFrame == 4)
+                //const Animation& anim = gMonsterAnimations[(int32_t)OBJECT_STATE::ATTACK][(int32_t)monster.object.dir];
+                //if (anim.currentFrame == 4)
                 {
                     Collider& attackCollider = monster.attackCollider;
-                    DrawColliderBox(gMemDC, attackCollider, COLLISION_TYPE::MONSTER_SWORD);
+                    DrawColliderBox(gMemDC, attackCollider, COLLISION_TYPE::MONSTER_ATTACK);
 
                 }
             }
