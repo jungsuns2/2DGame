@@ -88,6 +88,7 @@ enum class COLLISION_TYPE
     NONE,
     PLAYER,
     PLAYER_ATTACK,
+    PLAYER_ARROW,
     MONSTER,
     MONSTER_ATTACK,
     GROUND,
@@ -654,47 +655,55 @@ void UpdateArrows(OBJECT_STATE objectState, std::vector<Arrow>* inactivateArrows
         constexpr int32_t ARROW_COUNT = 3;
         constexpr float ARROW_INTERVAL_Y = 20.0f;
 
-        Arrow recyclingArrows{};
+        static Arrow recycleArrows{};
+        static Collider oldState{};
+
+         oldState = recycleArrows.collider;
 
         if (keySkill.currentFrame == 5)
         {
+
             if (isESkill)
             {
                 for (int32_t cnt = 0; cnt < ARROW_COUNT; ++cnt)
                 {
                    float offsetY = (cnt - 1) * ARROW_INTERVAL_Y;
 
+
                    if (not inactivateArrows->empty())
                    {
-                       recyclingArrows = std::move(inactivateArrows->back());
+                       recycleArrows = std::move(inactivateArrows->back());
                        inactivateArrows->pop_back();
                    }
                    else
                    {
-                       recyclingArrows = {};
+                       recycleArrows = {};
                    }
 
                    float fireTime = cnt * 0.2f;
-
+                   
                    // 초기화
-                   recyclingArrows = SpawnArrow(offsetY, fireTime);
-                   activeArrows->push_back(std::move(recyclingArrows));
+                   recycleArrows = SpawnArrow(offsetY, fireTime);
+                   activeArrows->push_back(std::move(recycleArrows));
                 }
             }
             else
             {
                 if (not inactivateArrows->empty())
                 {
-                    recyclingArrows = std::move(inactivateArrows->back());
+                    recycleArrows = std::move(inactivateArrows->back());
                     inactivateArrows->pop_back();
                 }
                 else
                 {
-                    recyclingArrows = {};
+                    recycleArrows = {};
                 }
 
-                recyclingArrows = SpawnArrow(0.001f, 0.001f);
-                activeArrows->push_back(std::move(recyclingArrows));
+                recycleArrows = SpawnArrow(0.001f, 0.001f);
+                recycleArrows.collider.state = oldState.state;
+                recycleArrows.collider.collidedType = oldState.collidedType;
+
+                activeArrows->push_back(std::move(recycleArrows));
             }
 
             gIsArrowFired = false; // 한 번만 그려지도록
@@ -716,6 +725,7 @@ void UpdateArrows(OBJECT_STATE objectState, std::vector<Arrow>* inactivateArrows
         if (currentArrows.elapsedTime >= (currentArrows.fireTime + 2.0f))
         {
             currentArrows.elapsedTime = 0.0f;
+            currentArrows.collider.isActive = false;
 
             inactivateArrows->push_back(std::move(currentArrows));
             arrowIter = activeArrows->erase(arrowIter);   // 지우면 다음 번째를 가리키게 된다.
@@ -748,12 +758,12 @@ Arrow SpawnArrow(float offsetY, float fireTime)
 
         .collider =
         {
-            .type = COLLISION_TYPE::PLAYER_ATTACK,
+            .type = COLLISION_TYPE::PLAYER_ARROW,
             .state = COLLISION_STATE::NONE,
             .offsetPos = {.x = 30.0f, .y = 35.0f },
             .scale = {.x = 27.0f, .y = 27.0f },
-            .collidedType = COLLISION_TYPE::PLAYER_ATTACK,
-            .isActive = false,
+            .collidedType = COLLISION_TYPE::PLAYER_ARROW,
+            .isActive = true,
         },
     };
 }
@@ -1005,6 +1015,7 @@ void Initialize()
             .state = OBJECT_STATE::IDLE,
             .isDead = false,
         },
+
         .hp = 10000,
         .attack = 10,
         .damage = 0,
@@ -1021,6 +1032,7 @@ void Initialize()
             .collidedType = COLLISION_TYPE::PLAYER,
             .isActive = false,
         },
+
         .attackCollider = 
         {
             .type = COLLISION_TYPE::PLAYER_ATTACK,
@@ -1067,7 +1079,7 @@ void Initialize()
                 .isDead = false,
             },
 
-            .hp = 100,
+            .hp = 10000,
             .attack = 10,
             .damage = 0,
 
@@ -1164,7 +1176,7 @@ void Update()
             else
             {
                 gCamera.lookAt.x = gTargetObj->pos.x + 100.f;
-                gCamera.lookAt.y = gTargetObj->pos.y + 50.f;
+                gCamera.lookAt.y = gTargetObj->pos.y + 70.f;
             }
         }
 
@@ -1256,7 +1268,6 @@ void Update()
         }
 
         gPlayerInformation.isAttacking = true;
-
         gPlayerInformation.attackCollider.isActive = true;
     }
 
@@ -1266,8 +1277,6 @@ void Update()
         ResetAnimation(&gPlayerAnimations[(int32_t)playerObject.state][(int32_t)playerObject.dir]);
 
         gPlayerInformation.isAttacking = true;
-
-        printf("누름\n");
         gIsArrowFired = true;
     }
 
@@ -1329,13 +1338,13 @@ void Update()
                     playerObject.state = OBJECT_STATE::IDLE;
                     gPlayerInformation.isAttacking = false;
                     gPlayerInformation.attackCollider.isActive = false;
-                }
+                                    }
             }
         }
     }
 
     // 화살 업데이트
-// move는 복사X, 소유권 이전O
+    // move는 복사X, 소유권 이전O
     UpdateArrows(OBJECT_STATE::SPACESKILL, &gInactivateSpaceSkill, &gActivateSpaceSkill, false);
     UpdateArrows(OBJECT_STATE::ESKILL, &gInactivateESkill, &gActivateESkill, true);
     
@@ -1593,9 +1602,7 @@ void FinalUpdate()
 
 void UpdateColliders()
 {
-    // 피해자만 작성한다.
-
-    // 플레이어 체 - 몬스터 공격
+    // 플레이어 - 몬스터 공격
     for (Monster& monsterInfo : gMonstersInformation)
     {
         Collider& playerCollider = gPlayerInformation.bodyCollider;
@@ -1647,6 +1654,8 @@ void UpdateColliders()
                 gPlayerInformation.isDamaging = false;
             }
         );
+
+        ProcessCollision(playerToMonsterAttack, monsterAttackCollider, COLLISION_TYPE::MONSTER_ATTACK, COLLISION_TYPE::PLAYER);
     }
 
     // 몬스터 몸체 - 플레이어 공격
@@ -1702,9 +1711,137 @@ void UpdateColliders()
                 monsterInfo.isDamaging = false;
             }
         );
+
+        ProcessCollision(monsterToPlayerAttack, playerAttackCollider, COLLISION_TYPE::PLAYER_ATTACK, COLLISION_TYPE::MONSTER);
     }
 
-    // TODO: 몬스터 몸통 - 플레이어 활
+    // 몬스터 몸통 - 플레이어 화살 (Space)
+    for (Monster& monsterInfo : gMonstersInformation)
+    {
+        for (Arrow& arrows : gActivateSpaceSkill)
+        {
+            Collider& monsterCollider = monsterInfo.bodyCollider;
+            Collider& playerArrowCollider = arrows.collider;
+
+            //printf("%d \n", arrows.collider.state);
+
+            bool monsterToPlayerArrow = false;
+
+            if (not monsterInfo.object.isDead)
+            {
+                monsterToPlayerArrow = IsColliding(monsterCollider, playerArrowCollider);
+            }
+
+            ProcessCollision(monsterToPlayerArrow, monsterCollider, COLLISION_TYPE::MONSTER, COLLISION_TYPE::PLAYER_ARROW,
+                [&]()
+                {
+                    monsterInfo.hp -= gPlayerInformation.attack;
+                    printf("Enter \n");
+                },
+                [&]()
+                {
+                    Animation& anim1 = gPlayerAnimations[(int32_t)OBJECT_STATE::SPACESKILL][(int32_t)gPlayerInformation.object.dir];
+                    //if (anim1.currentFrame == 5)
+                    {
+                        float pushDirX = monsterCollider.finalPos.x - playerArrowCollider.finalPos.x;
+                        float pushDirY = monsterCollider.finalPos.y - playerArrowCollider.finalPos.y;
+
+                        // 정규화
+                        float pushSqrtf = pushDirX * pushDirX + pushDirY * pushDirY;
+                        float len = std::sqrt(pushSqrtf);
+
+                        if (len != 0.0f)
+                        {
+                            pushDirX /= len;
+                            pushDirY /= len;
+                        }
+
+                        // 밀리도록 하기
+                        float power = 100.0f;
+                        monsterInfo.pushVelocity.x += pushDirX * power;
+                        monsterInfo.pushVelocity.y += pushDirY * power;
+
+                        monsterInfo.isDamaging = true;
+                    }
+
+                    printf("Stay \n");
+                },
+                [&]()
+                {
+                    monsterInfo.isDamaging = false;
+                },
+                [&]()
+                {
+                    monsterInfo.isDamaging = false;
+                    printf("None \n");
+
+                }
+            );
+
+            ProcessCollision(monsterToPlayerArrow, playerArrowCollider, COLLISION_TYPE::PLAYER_ARROW, COLLISION_TYPE::MONSTER);
+        }
+    }
+
+    // 몬스터 몸통 - 플레이어 화살 (E Skill)
+    for (Monster& monsterInfo : gMonstersInformation)
+    {
+        for (Arrow& arrows : gActivateESkill)
+        {
+            Collider& monsterCollider = monsterInfo.bodyCollider;
+            Collider& playerArrowCollider = arrows.collider;
+
+            bool monsterToPlayerArrow = false;
+
+            if (not monsterInfo.object.isDead)
+            {
+                monsterToPlayerArrow = IsColliding(monsterCollider, playerArrowCollider);
+            }
+
+            ProcessCollision(monsterToPlayerArrow, monsterCollider, COLLISION_TYPE::MONSTER, COLLISION_TYPE::PLAYER_ARROW,
+                [&]()
+                {
+                    monsterInfo.hp -= gPlayerInformation.attack;
+                },
+                [&]()
+                {
+                    Animation& anim1 = gPlayerAnimations[(int32_t)OBJECT_STATE::ESKILL][(int32_t)gPlayerInformation.object.dir];
+                    if (anim1.currentFrame == 5)
+                    {
+                        float pushDirX = monsterCollider.finalPos.x - playerArrowCollider.finalPos.x;
+                        float pushDirY = monsterCollider.finalPos.y - playerArrowCollider.finalPos.y;
+
+                        // 정규화
+                        float pushSqrtf = pushDirX * pushDirX + pushDirY * pushDirY;
+                        float len = std::sqrt(pushSqrtf);
+
+                        if (len != 0.0f)
+                        {
+                            pushDirX /= len;
+                            pushDirY /= len;
+                        }
+
+                        // 밀리도록 하기
+                        float power = 100.0f;
+                        monsterInfo.pushVelocity.x += pushDirX * power;
+                        monsterInfo.pushVelocity.y += pushDirY * power;
+
+                        monsterInfo.isDamaging = true;
+                    }
+                },
+                [&]()
+                {
+                    monsterInfo.isDamaging = false;
+                },
+                [&]()
+                {
+                    monsterInfo.isDamaging = false;
+                }
+            );
+
+            ProcessCollision(monsterToPlayerArrow, playerArrowCollider, COLLISION_TYPE::PLAYER_ARROW, COLLISION_TYPE::MONSTER);
+        }
+    }
+
 }
 
 void Draw()
@@ -1764,13 +1901,13 @@ void Draw()
         for (Arrow& spaceSkill : gActivateSpaceSkill)
         {
             Collider& spaceSkillArrowCollider = spaceSkill.collider;
-            DrawColliderBox(gMemDC, spaceSkillArrowCollider, COLLISION_TYPE::PLAYER_ATTACK);
+            DrawColliderBox(gMemDC, spaceSkillArrowCollider, COLLISION_TYPE::PLAYER_ARROW);
         }
 
         for (Arrow& eSkill : gActivateESkill)
         {
             Collider& eSkillArrowCollider = eSkill.collider;
-            DrawColliderBox(gMemDC, eSkillArrowCollider, COLLISION_TYPE::PLAYER_ATTACK);
+            DrawColliderBox(gMemDC, eSkillArrowCollider, COLLISION_TYPE::PLAYER_ARROW);
         }
 
         // 몬스터 충돌박스
