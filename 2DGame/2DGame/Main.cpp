@@ -208,13 +208,28 @@ struct Animation
     bool isLoop;
 };
 
+struct Camera
+{
+    vPoint lookAt;      // 목표 위치
+    vPoint curLookAt;  
+    vPoint preLookAt;
+
+    vPoint diff;      // 해상도 중심, 카메라 LookAt간의 차
+
+    float speed;
+
+    float targetTime;    // 타겟을 따라가는데 걸리는 시간
+    float targetSpeed;
+    float TargetAccTime; // 누적시간
+};
+
 // ===============================================================
 // 함수
 static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 static INT_PTR CALLBACK About(HWND, UINT, WPARAM, LPARAM);
 
 static Texture* LoadTexture(const std::string& name);
-static void DrawTexture(const Texture& texture, const vPoint pos, const vPoint scale);
+static void DrawTexture(const Texture& texture, vPoint pos, const vPoint scale);
 
 static void LoadAnimation(Animation* animation, const std::string& name, int32_t maxFrame, float time, bool bLoop);
 static void ResetAnimation(Animation* animation);
@@ -231,10 +246,18 @@ static void ProcessCollision(bool isColliding, Collider& victim, COLLISION_TYPE 
                                  std::function<void()> onEnter = nullptr, std::function<void()> onStay = nullptr,
                                  std::function<void()> onExit = nullptr, std::function<void()> None = nullptr);
 
+// 텍스트 출력 함스
 static void PrintText(HDC dc, int startX, int startY, const std::string& printStr, int fontSize, COLORREF fontColor);
 
 static void DamagePos(vPoint vPos, vPoint vPushVelocity);
 
+// 카메라 관련
+static void SetLookAt(vPoint look);
+
+static vPoint WorldToScreen(vPoint worldPos);
+static vPoint ScreenToWorld(vPoint renderPos);
+
+// 기본 함수들
 static void Initialize();
 static void Update();
 static void FinalUpdate();
@@ -288,6 +311,10 @@ static std::array<Monster, MONSTER_COUNT>gMonstersInformation;
 static Animation gMonsterAnimations[(int32_t)OBJECT_STATE::END][(int32_t)DIR_TYPE::END];
 
 static std::vector<COLLISION_TYPE> gCollisionType;
+
+static Camera gCamera;
+static Object* gTargetObj;
+static bool gForceMove;
 
 constexpr int32_t KeyMaps[(int32_t)KEY::END]
 {
@@ -549,8 +576,11 @@ Texture* LoadTexture(const std::string& name)
     return texture;
 }
 
-void DrawTexture(const Texture& texture, const vPoint pos, const vPoint scale)
+void DrawTexture(const Texture& texture, vPoint pos, const vPoint scale)
 {
+    pos.x -= gCamera.diff.x;
+    pos.y -= gCamera.diff.y;
+
     TransparentBlt(gMemDC, (int)pos.x, (int)pos.y,
         (int)(texture.bitInfo.bmWidth * scale.x), (int)(texture.bitInfo.bmHeight * scale.y),
         texture.hDC, 0, 0, (int)texture.bitInfo.bmWidth, (int)texture.bitInfo.bmHeight, RGB(0, 255, 0));
@@ -737,8 +767,10 @@ void DrawColliderBox(HDC dc, const Collider& collider, COLLISION_TYPE originalTy
 
     HBRUSH oldBrush = (HBRUSH)SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
 
-    Rectangle(dc, int(collider.finalPos.x - collider.scale.x / 2.0f), int(collider.finalPos.y - collider.scale.y / 2.0f),
-        int(collider.finalPos.x + collider.scale.x / 2.0f), int(collider.finalPos.y + collider.scale.y / 2.0f));
+    vPoint renderPos{ .x = collider.finalPos.x - gCamera.diff.x , .y = collider.finalPos.y - gCamera.diff.y };
+
+    Rectangle(dc, int(renderPos.x - collider.scale.x / 2.0f), int(renderPos.y - collider.scale.y / 2.0f),
+        int(renderPos.x + collider.scale.x / 2.0f), int(renderPos.y + collider.scale.y / 2.0f));
 
     SelectObject(dc, oldPen);
     SelectObject(dc, oldBrush);
@@ -872,6 +904,36 @@ void DamagePos(vPoint vPos, vPoint vPushVelocity)
     }
 }
 
+void SetLookAt(vPoint look)
+{
+    gCamera.lookAt = look; // 최종 좌표
+
+    float dx = gCamera.lookAt.x - gCamera.preLookAt.x;
+    float dy = gCamera.lookAt.y - gCamera.preLookAt.y;
+
+    float lenSq = dx * dx + dy * dy;
+    float len = sqrtf(lenSq);
+
+    // 속도 = 이동 거리 / 목표 시간
+    gCamera.targetSpeed = len / gCamera.targetTime;
+    gCamera.TargetAccTime = 0.f;
+}
+
+vPoint WorldToScreen(vPoint worldPos)
+{
+    vPoint renderPos{ .x = worldPos.x - gCamera.diff.x, .y = worldPos.y - gCamera.diff.y };
+    
+    return renderPos;
+}
+
+vPoint ScreenToWorld(vPoint renderPos)
+{
+    vPoint worldPos{ .x = renderPos.x + gCamera.diff.x, .y = renderPos.y + gCamera.diff.y };
+
+    return worldPos;
+
+}
+
 void DrawAnimation(const Animation& animation, const vPoint pos, const vPoint scale)
 {
     if (animation.texture.empty())
@@ -971,6 +1033,23 @@ void Initialize()
         }
     };
 
+    { // 카메라 초기화
+        gCamera =
+        {
+            .lookAt{},
+            .curLookAt{},
+            .preLookAt{},
+
+            .diff{},
+
+            .speed = 300.f,
+
+            .targetTime = 0,
+            .targetSpeed = 0,
+            .TargetAccTime = 0.3f,
+        };
+    }
+
     // 몬스터 초기화
     for (int32_t i = 0; i < MONSTER_COUNT; ++i)
     {
@@ -1030,6 +1109,9 @@ void Initialize()
             //.finalPos = {},
             //.scale = { .x = 60.0f, .y = 50.0f },
     }
+
+    vPoint windowSize{ VIEWSIZE_X, VIEWSIZE_Y};
+    //SetLookAt(windowSize);
 }
 
 void Update()
@@ -1063,6 +1145,90 @@ void Update()
 
             gVecKeyInfo[i].bPrevPush = false;
         }
+    }
+  
+    {   // 카메라 업데이트
+        // 카메라 타겟을 설정
+        if (!gPlayerInformation.object.isDead)
+        {
+            gTargetObj = &gPlayerInformation.object;
+        }
+
+        if (gTargetObj)
+        {
+            if (gTargetObj->isDead or gForceMove)
+            {
+                gTargetObj = nullptr;
+                gForceMove = false;
+            }
+            else
+            {
+                gCamera.lookAt.x = gTargetObj->pos.x + 100.f;
+                gCamera.lookAt.y = gTargetObj->pos.y + 50.f;
+            }
+        }
+
+        // 키 업데이트
+        if (gVecKeyInfo[(int32_t)KEY::UP].eState == KEY_STATE::HOLD)
+        {
+            gCamera.lookAt.y -= gDeltaTime * gCamera.speed;
+            gForceMove = true;
+        }
+        if (gVecKeyInfo[(int32_t)KEY::DOWN].eState == KEY_STATE::HOLD)
+        {
+            gCamera.lookAt.y += gDeltaTime * gCamera.speed;
+            gForceMove = true;
+        }
+        if (gVecKeyInfo[(int32_t)KEY::LEFT].eState == KEY_STATE::HOLD)
+        {
+            gCamera.lookAt.x -= gDeltaTime * gCamera.speed;
+            gForceMove = true;
+        }
+        if (gVecKeyInfo[(int32_t)KEY::RIGHT].eState == KEY_STATE::HOLD)
+        {
+            gCamera.lookAt.x += gDeltaTime * gCamera.speed;
+            gForceMove = true;
+        }
+
+		// 이전 LookAt과 현재 Look의 차이점을 보정하여 현재 LookAt을 구한다.
+        gCamera.TargetAccTime += gDeltaTime;
+
+        if (gCamera.targetTime <= gCamera.TargetAccTime)
+        {
+            gCamera.curLookAt = gCamera.lookAt;
+        }
+        else
+        {
+            vPoint lookDir{ .x = gCamera.lookAt.x - gCamera.preLookAt.x, .y = gCamera.lookAt.y - gCamera.preLookAt.y };
+
+            // 길이 계산해서
+            float lenSq = lookDir.x * lookDir.x + lookDir.y * lookDir.y;
+            float len = std::sqrt(lenSq);
+
+            if (!(std::fabs(lookDir.x) < 0.001f && std::fabs(lookDir.y) < 0.001f))
+            {   
+                // 정규화
+                vPoint dir{};
+                
+                if (len > 0.001f)
+                {
+                    dir = { .x = lookDir.x / len, .y = lookDir.y / len }; // 정규화, 방향 정보만 남긴다.
+                }
+
+                vPoint move{ .x = dir.x * gDeltaTime * gCamera.targetSpeed, .y = dir.y * gDeltaTime * gCamera.targetSpeed };
+
+                gCamera.curLookAt.x = gCamera.preLookAt.x + move.x;
+                gCamera.curLookAt.y = gCamera.preLookAt.y + move.y;
+            }
+        }
+
+        int centerX = VIEWSIZE_X / 2;
+        int centerY = VIEWSIZE_Y / 2;
+
+        gCamera.diff.x = gCamera.curLookAt.x - centerX;
+        gCamera.diff.y = gCamera.curLookAt.y - centerY;
+
+        gCamera.preLookAt = gCamera.curLookAt;
     }
 
     // 플레이어 키 업데이트
@@ -1555,8 +1721,8 @@ void Draw()
     
     char buffer[64];
     sprintf_s(buffer, "hp: %d", gPlayerInformation.hp);
-    PrintText(gMemDC, int(gPlayerInformation.bodyCollider.finalPos.x - 25),
-        int(gPlayerInformation.bodyCollider.finalPos.y - 40), buffer, 12, RGB(255, 255, 255));
+    vPoint renderPos{ .x = gPlayerInformation.bodyCollider.finalPos.x - gCamera.diff.x , .y = gPlayerInformation.bodyCollider.finalPos.y - gCamera.diff.y };
+    PrintText(gMemDC, int(renderPos.x - 25), int(renderPos.y - 40), buffer, 12, RGB(255, 255, 255));
 
     // 몬스터 그리기
     for (Monster& monster : gMonstersInformation)
@@ -1565,8 +1731,9 @@ void Draw()
 
         char buffer[64];
         sprintf_s(buffer, "hp: %d", monster.hp);
-        PrintText(gMemDC, int(monster.bodyCollider.finalPos.x - 25),
-            int(monster.bodyCollider.finalPos.y - 40), buffer, 12, RGB(255, 255, 255));
+        vPoint renderPos{ .x = monster.bodyCollider.finalPos.x - gCamera.diff.x , .y = monster.bodyCollider.finalPos.y - gCamera.diff.y };
+        PrintText(gMemDC, int(renderPos.x - 25), int(renderPos.y - 40), buffer, 12, RGB(255, 255, 255));
+
     }
     
     // Space Skill 화살
