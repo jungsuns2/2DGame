@@ -111,8 +111,8 @@ struct vPoint
 struct Texture
 {
     HDC hDC;
-    HBITMAP hBit[(int32_t)DIR_TYPE::RIGHT];
-    BITMAP bitInfo[(int32_t)DIR_TYPE::RIGHT];
+    HBITMAP hBit[(int32_t)DIR_TYPE::END];
+    BITMAP bitInfo[(int32_t)DIR_TYPE::END];
 };
 
 struct Collider
@@ -229,12 +229,12 @@ struct Camera
 static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 static INT_PTR CALLBACK About(HWND, UINT, WPARAM, LPARAM);
 
-static Texture* LoadTexture(const std::string& name, bool flipX);
-static void DrawTexture(const Texture& texture, vPoint pos, const vPoint scale);
+static Texture* LoadTexture(const std::string& name);
+static void DrawTexture(const Texture& texture, vPoint pos, DIR_TYPE dir, const vPoint scale);
 
-static void LoadAnimation(Animation* animation, const std::string& name, int32_t maxFrame, float time, bool bLoop, bool flipX);
+static void LoadAnimation(Animation* animation, const std::string& name, int32_t maxFrame, float time, bool bLoop);
 static void ResetAnimation(Animation* animation);
-static void DrawAnimation(const Animation& animation, const vPoint pos, const vPoint scale);
+static void DrawAnimation(const Animation& animation, const vPoint pos, DIR_TYPE dir, const vPoint scale);
 static void UpdateAnimation(Animation* animation);
 
 static void UpdateArrows(OBJECT_STATE objectState, std::vector<Arrow>* inactivateArrows, std::vector<Arrow>* activeArrows, bool isESkill);
@@ -549,80 +549,70 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
     return (INT_PTR)FALSE;
 }
 
-Texture* LoadTexture(const std::string& name, bool flipX)
+Texture* LoadTexture(const std::string& name)
 {
-    std::string textureName = ((flipX) ? "Right" : "Left") + name;
+    std::unordered_map<std::string, Texture*>::iterator findTexture = gMapTextures.find(name);
 
-    std::unordered_map<std::string, Texture*>::iterator iterFindTexture = gMapTextures.find(textureName);
-
-    if (iterFindTexture != gMapTextures.end())  // 있는 파일이면
+    if (findTexture != gMapTextures.end())  // 있는 파일이면
     {
-        return iterFindTexture->second;      // 재사용
+        return findTexture->second;      // 재사용
     }
 
     Texture* texture = new Texture;
     texture->hDC = CreateCompatibleDC(gHDC); // 비트맵과 연결할 DC
 
     // 파일 명 찾기
-    for (int32_t dir = 0; dir < (int32_t)DIR_TYPE::END; ++dir)
-    {
-        std::wstring wFileName = std::wstring(L"Resource\\") + std::wstring(name.begin(), name.end());
-        texture->hBit[dir] = (HBITMAP)LoadImage(nullptr, wFileName.c_str(), IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION | LR_LOADFROMFILE);
-        assert(texture->hBit[dir] != nullptr and "파일 오류");
+    std::wstring wFileName = std::wstring(L"Resource\\") + std::wstring(name.begin(), name.end());
+    texture->hBit[(int32_t)DIR_TYPE::LEFT] = (HBITMAP)LoadImage(nullptr, wFileName.c_str(), IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION | LR_LOADFROMFILE);
+    assert(texture->hBit[(int32_t)DIR_TYPE::LEFT] != nullptr and "파일 오류");
 
-        // 비트맵과 DC연결
-        HBITMAP hPrevBit = (HBITMAP)SelectObject(texture->hDC, texture->hBit[dir]);
-        DeleteObject(hPrevBit);
+    // 비트맵과 DC연결
+    HBITMAP hLeftBit = (HBITMAP)SelectObject(texture->hDC, texture->hBit[(int32_t)DIR_TYPE::LEFT]);
+    GetObject(texture->hBit[(int32_t)DIR_TYPE::LEFT], sizeof(BITMAP), &texture->bitInfo[(int32_t)DIR_TYPE::LEFT]);
 
-        // 비트맵 정보
-        GetObject(texture->hBit[dir], sizeof(BITMAP), &texture->bitInfo[dir]);
+    // 좌우 반전
+    int width = texture->bitInfo[(int32_t)DIR_TYPE::LEFT].bmWidth;
+    int height = texture->bitInfo[(int32_t)DIR_TYPE::LEFT].bmHeight;
 
-        // 좌우 반전
-        if (dir == (int32_t)DIR_TYPE::RIGHT)
-        {
-            flipX = true;
+    HDC hRightDC = CreateCompatibleDC(texture->hDC);
+    HBITMAP hRightBit = CreateCompatibleBitmap(texture->hDC, width, height);
+    HBITMAP fOldRightBit = (HBITMAP)SelectObject(hRightDC, hRightBit);
 
-            HDC hFlipXDC = CreateCompatibleDC(texture->hDC);
-            HBITMAP hFlipXBitmap = CreateCompatibleBitmap(texture->hDC, texture->bitInfo[(int32_t)dir].bmWidth,
-                texture->bitInfo[(int32_t)dir].bmHeight);
-            HBITMAP fOldFlipXBitmap = (HBITMAP)SelectObject(hFlipXDC, hFlipXBitmap);
+    // LEFT 이미지 고속 복사 한다.
+    BitBlt(hRightDC, 0, 0, width, height, texture->hDC, 0, 0, SRCCOPY);
 
-            BitBlt(hFlipXDC, 0, 0, texture->bitInfo[(int32_t)dir].bmWidth,
-                texture->bitInfo[(int32_t)dir].bmHeight, texture->hDC, 0, 0, SRCCOPY);
+    // RIGHT 비트맵을 생성하고 연결한다.
+    texture->hBit[(int32_t)DIR_TYPE::RIGHT] = CreateCompatibleBitmap(texture->hDC, width, height);
+    (HBITMAP)SelectObject(texture->hDC, texture->hBit[(int32_t)DIR_TYPE::RIGHT]);
 
-            // 좌우 반전 (-1이 반전된 거임)
-            StretchBlt(texture->hDC, 0, 0, texture->bitInfo[(int32_t)dir].bmWidth,
-                texture->bitInfo[(int32_t)dir].bmHeight,
-                hFlipXDC, texture->bitInfo[(int32_t)dir].bmWidth - 1, 0,
-                -texture->bitInfo[(int32_t)dir].bmWidth, texture->bitInfo[(int32_t)dir].bmHeight, SRCCOPY);
+    // 좌우 반전 복사
+    StretchBlt(texture->hDC, 0, 0, width, height, hRightDC, width - 1, 0, -width, height, SRCCOPY);
 
-            SelectObject(hFlipXDC, fOldFlipXBitmap);
-            DeleteObject(hFlipXBitmap);
-            DeleteDC(hFlipXDC);
-        }
-    }
+    // RIGHT 비트맵 정보 저장
+    GetObject(texture->hBit[(int32_t)DIR_TYPE::RIGHT], sizeof(BITMAP), &texture->bitInfo[(int32_t)DIR_TYPE::RIGHT]);
 
-    flipX = false;
+    gMapTextures.insert(make_pair(name, texture));
 
-    gMapTextures.insert(make_pair(textureName, texture));
+    SelectObject(hRightDC, fOldRightBit);
+    DeleteObject(hRightBit);
+    DeleteDC(hRightDC);
 
     return texture;
 }
 
-void DrawTexture(const Texture& texture, vPoint pos, const vPoint scale)
+void DrawTexture(const Texture& texture, vPoint pos, DIR_TYPE dir, const vPoint scale)
 {
     pos.x -= gCamera.diff.x;
     pos.y -= gCamera.diff.y;
 
-    TransparentBlt(gMemDC, (int)pos.x, (int)pos.y,
-        (int)(texture.bitInfo[(int32_t)gPlayerInformation.object.dir].bmWidth * scale.x), 
-        (int)(texture.bitInfo[(int32_t)gPlayerInformation.object.dir].bmHeight * scale.y),
-        texture.hDC, 0, 0, 
-        (int)texture.bitInfo[(int32_t)gPlayerInformation.object.dir].bmWidth, 
-        (int)texture.bitInfo[(int32_t)gPlayerInformation.object.dir].bmHeight, RGB(0, 255, 0));
+    SelectObject(texture.hDC, texture.hBit[(int32_t)dir]);
+
+    const BITMAP& dirBit = texture.bitInfo[(int)dir];
+    TransparentBlt(gMemDC, (int)pos.x, (int)pos.y, (int)(dirBit.bmWidth * scale.x), (int)(dirBit.bmHeight * scale.y),
+        texture.hDC, 0, 0, dirBit.bmWidth, dirBit.bmHeight, RGB(0, 255, 0));
 }
 
-void LoadAnimation(Animation* animation, const std::string& name, int32_t maxFrame, float time, bool bLoop, bool flipX)
+void LoadAnimation(Animation* animation, const std::string& name, int32_t maxFrame, float time, bool bLoop)
 {
     assert(animation != nullptr);
 
@@ -636,7 +626,7 @@ void LoadAnimation(Animation* animation, const std::string& name, int32_t maxFra
     for (int64_t i = 0; i < maxFrame; ++i)
     {
         std::string fileName = name + std::to_string(i) + ".bmp";
-        Texture* texture = LoadTexture(fileName, flipX);
+        Texture* texture = LoadTexture(fileName);
         assert(texture != nullptr and "애니메이션 오류");
 
         animation->texture.push_back(texture);
@@ -697,7 +687,6 @@ void UpdateArrows(OBJECT_STATE objectState, std::vector<Arrow>* inactivateArrows
 
         if (keySkill.currentFrame == 5)
         {
-
             if (isESkill)
             {
                 for (int32_t cnt = 0; cnt < ARROW_COUNT; ++cnt)
@@ -976,10 +965,9 @@ vPoint ScreenToWorld(vPoint renderPos)
     vPoint worldPos{ .x = renderPos.x + gCamera.diff.x, .y = renderPos.y + gCamera.diff.y };
 
     return worldPos;
-
 }
 
-void DrawAnimation(const Animation& animation, const vPoint pos, const vPoint scale)
+void DrawAnimation(const Animation& animation, const vPoint pos, DIR_TYPE dir, const vPoint scale)
 {
     if (animation.texture.empty())
     {
@@ -989,7 +977,7 @@ void DrawAnimation(const Animation& animation, const vPoint pos, const vPoint sc
     Texture* current = animation.texture[animation.currentFrame];
     assert(current != nullptr);
 
-    DrawTexture(*current, pos, scale);
+    DrawTexture(*current, pos, dir, scale);
 }
 
 void Initialize()
@@ -999,25 +987,26 @@ void Initialize()
         std::string monsterFolderName = "Monster\\";
             
         // 플레이어 이미지
-        LoadAnimation(&gPlayerAnimations[(int32_t)OBJECT_STATE::IDLE], playerFolderName + "idle", 6, 0.3f, true, false);
-        LoadAnimation(&gPlayerAnimations[(int32_t)OBJECT_STATE::WALK], playerFolderName + "walk", 8, 0.3f, true, false);
-        LoadAnimation(&gPlayerAnimations[(int32_t)OBJECT_STATE::ATTACK], playerFolderName + "attack_base", 6, 0.07f, false, false);
-        LoadAnimation(&gPlayerAnimations[(int32_t)OBJECT_STATE::SPACESKILL], playerFolderName + "eSkill", 9, 0.07f, false, false);
-        LoadAnimation(&gPlayerAnimations[(int32_t)OBJECT_STATE::ESKILL], playerFolderName + "eSkill", 9, 0.07f, false, false);
-        LoadAnimation(&gPlayerAnimations[(int32_t)OBJECT_STATE::DAMAGE], playerFolderName + "damage", 4, 0.3f, true, false);
-        LoadAnimation(&gPlayerAnimations[(int32_t)OBJECT_STATE::DEAD], playerFolderName + "dead", 4, 0.3f, false, false);
+        LoadAnimation(&gPlayerAnimations[(int32_t)OBJECT_STATE::IDLE], playerFolderName + "idle", 6, 0.3f, true);
+        LoadAnimation(&gPlayerAnimations[(int32_t)OBJECT_STATE::WALK], playerFolderName + "walk", 8, 0.3f, true);
+        LoadAnimation(&gPlayerAnimations[(int32_t)OBJECT_STATE::ATTACK], playerFolderName + "attack_base", 6, 0.07f, false);
+        LoadAnimation(&gPlayerAnimations[(int32_t)OBJECT_STATE::SPACESKILL], playerFolderName + "eSkill", 9, 0.07f, false);
+        LoadAnimation(&gPlayerAnimations[(int32_t)OBJECT_STATE::ESKILL], playerFolderName + "eSkill", 9, 0.07f, false);
+        LoadAnimation(&gPlayerAnimations[(int32_t)OBJECT_STATE::DAMAGE], playerFolderName + "damage", 4, 0.3f, true);
+        LoadAnimation(&gPlayerAnimations[(int32_t)OBJECT_STATE::DEAD], playerFolderName + "dead", 4, 0.3f, false);
 
 
         for (int32_t dir = 0; dir < (int32_t)DIR_TYPE::END; ++dir)
-        {        // 화살 이미지
-            gArrowTextures[dir] = LoadTexture("Player\\arrow.bmp", false);
-
-            // 몬스터 이미지
-            LoadAnimation(&gMonsterAnimations[(int32_t)OBJECT_STATE::IDLE], monsterFolderName + "idle", 6, 0.3f, true);
-            LoadAnimation(&gMonsterAnimations[(int32_t)OBJECT_STATE::WALK], monsterFolderName + "walk", 8, 0.3f, true);
-            LoadAnimation(&gMonsterAnimations[(int32_t)OBJECT_STATE::ATTACK], monsterFolderName + "attack_base", 6, 0.07f, false);
-            LoadAnimation(&gMonsterAnimations[(int32_t)OBJECT_STATE::DAMAGE], monsterFolderName + "damage", 4, 0.3f, true);
+        {        
+            // 화살 이미지
+            gArrowTextures[dir] = LoadTexture("Player\\arrow.bmp");
         }
+
+        // 몬스터 이미지
+        LoadAnimation(&gMonsterAnimations[(int32_t)OBJECT_STATE::IDLE], monsterFolderName + "idle", 6, 0.3f, true);
+        LoadAnimation(&gMonsterAnimations[(int32_t)OBJECT_STATE::WALK], monsterFolderName + "walk", 8, 0.3f, true);
+        LoadAnimation(&gMonsterAnimations[(int32_t)OBJECT_STATE::ATTACK], monsterFolderName + "attack_base", 6, 0.07f, true);
+        LoadAnimation(&gMonsterAnimations[(int32_t)OBJECT_STATE::DAMAGE], monsterFolderName + "damage", 4, 0.3f, true);
     }
 
     // 키 입력 초기화
@@ -1370,7 +1359,7 @@ void Update()
                     playerObject.state = OBJECT_STATE::IDLE;
                     gPlayerInformation.isAttacking = false;
                     gPlayerInformation.attackCollider.isActive = false;
-                                    }
+                }
             }
         }
     }
@@ -1884,7 +1873,7 @@ void Draw()
     Rectangle(gMemDC, -1, -1, VIEWSIZE_X + 1, VIEWSIZE_Y + 1);
 
     // 플레이어 그리기
-    DrawAnimation(gPlayerAnimations[(int32_t)gPlayerInformation.object.state], gPlayerInformation.object.pos, gPlayerInformation.object.scale);
+    DrawAnimation(gPlayerAnimations[(int32_t)gPlayerInformation.object.state], gPlayerInformation.object.pos, gPlayerInformation.object.dir, gPlayerInformation.object.scale);
     
     char buffer[64];
     sprintf_s(buffer, "hp: %d", gPlayerInformation.hp);
@@ -1894,7 +1883,7 @@ void Draw()
     // 몬스터 그리기
     for (Monster& monster : gMonstersInformation)
     {
-        DrawAnimation(gMonsterAnimations[(int32_t)monster.object.state], monster.object.pos, monster.object.scale);
+        DrawAnimation(gMonsterAnimations[(int32_t)monster.object.state], monster.object.pos, monster.object.dir, monster.object.scale);
 
         char buffer[64];
         sprintf_s(buffer, "hp: %d", monster.hp);
@@ -1906,13 +1895,13 @@ void Draw()
     // Space Skill 화살
     for (Arrow& arrows : gActivateSpaceSkill)
     {
-        DrawTexture(*gArrowTextures[(int32_t)arrows.object.dir], arrows.object.pos, arrows.object.scale);
+        DrawTexture(*gArrowTextures[(int32_t)arrows.object.dir], arrows.object.pos, arrows.object.dir, arrows.object.scale);
     }
 
     // E Skill 화살
     for (Arrow& arrows : gActivateESkill)
     {
-        DrawTexture(*gArrowTextures[(int32_t)arrows.object.dir], arrows.object.pos, arrows.object.scale);
+        DrawTexture(*gArrowTextures[(int32_t)arrows.object.dir], arrows.object.pos, arrows.object.dir, arrows.object.scale);
     }
 
     // 충돌박스 그리기
